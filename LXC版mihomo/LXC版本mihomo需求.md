@@ -7,3 +7,5 @@
 ## 要求
 
 需求上参考docker版mihomo，但这个是运行在PVE里，以LXC方式构建的系统，不依赖于docker。
+
+mihomo内核要开机自动运行。
