@@ -76,6 +76,7 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
+GRAY='\033[0;90m'
 PLAIN='\033[0m'
 
 # 主目录设置
@@ -539,63 +540,93 @@ update_state "installation_stage" "准备配置文件"
 echo -e "\${CYAN}准备Mihomo配置目录...\${PLAIN}"
 mkdir -p \$CONF_DIR
 
-# 选择配置方式
-echo -e "\${CYAN}请选择配置方式:\${PLAIN}"
-echo -e "  1) 使用机场订阅链接"
-echo -e "  2) 使用自定义配置文件"
-read -p "请选择 [1-2]: " config_choice
+# 检查现有配置文件
+EXISTING_CONFIG=0
+if [[ -f "\$CONF_DIR/config.yaml" ]]; then
+    echo -e "\${YELLOW}检测到现有配置文件: \$CONF_DIR/config.yaml\${PLAIN}"
+    read -p "是否使用现有配置文件? (y/n): " use_existing
+    
+    if [[ "\$use_existing" == "y" || "\$use_existing" == "Y" ]]; then
+        echo -e "\${GREEN}将保留现有配置文件\${PLAIN}"
+        EXISTING_CONFIG=1
+        
+        # 检查是否需要更新IP地址
+        if grep -q "bind-address:" "\$CONF_DIR/config.yaml"; then
+            CURRENT_IP=\$(grep "bind-address:" "\$CONF_DIR/config.yaml" | awk '{print \$2}')
+            if [[ "\$CURRENT_IP" != "\$MIHOMO_IP" ]]; then
+                echo -e "\${YELLOW}配置文件中IP地址(\$CURRENT_IP)与当前设置(\$MIHOMO_IP)不一致\${PLAIN}"
+                echo -e "\${CYAN}正在更新配置文件中的IP地址...\${PLAIN}"
+                sed -i "s/bind-address: \$CURRENT_IP/bind-address: \$MIHOMO_IP/g" "\$CONF_DIR/config.yaml"
+                sed -i "s/external-controller: \$CURRENT_IP/external-controller: \$MIHOMO_IP/g" "\$CONF_DIR/config.yaml"
+                echo -e "\${GREEN}配置文件已更新\${PLAIN}"
+            fi
+        fi
+    else
+        echo -e "\${CYAN}将创建新配置文件，原配置文件将备份\${PLAIN}"
+        cp "\$CONF_DIR/config.yaml" "\$CONF_DIR/config.yaml.backup.\$(date '+%Y%m%d%H%M%S')"
+    fi
+fi
 
-if [[ "\$config_choice" == "1" ]]; then
-    update_state "config_type" "subscription"
-    echo -e "\${CYAN}请输入您的机场订阅链接:\${PLAIN}"
-    read -p "订阅链接: " sub_url
-    
-    update_state "subscription_url" "\$sub_url"
-    
-    echo -e "\${CYAN}正在获取订阅配置...\${PLAIN}"
-    
-    # 尝试获取订阅内容
-    if ! curl -s -o /tmp/subscription.yaml "\$sub_url"; then
-        echo -e "\${RED}无法获取订阅内容，请检查链接是否正确或网络连接\${PLAIN}"
-        exit 1
+# 如果不使用现有配置，则创建新配置
+if [[ \$EXISTING_CONFIG -eq 0 ]]; then
+    # 选择配置方式
+    echo -e "\${CYAN}请选择配置方式:\${PLAIN}"
+    echo -e "  1) 使用机场订阅链接"
+    echo -e "  2) 使用自定义配置文件"
+    read -p "请选择 [1-2]: " config_choice
+
+    if [[ "\$config_choice" == "1" ]]; then
+        update_state "config_type" "subscription"
+        echo -e "\${CYAN}请输入您的机场订阅链接:\${PLAIN}"
+        read -p "订阅链接: " sub_url
+        
+        update_state "subscription_url" "\$sub_url"
+        
+        echo -e "\${CYAN}正在获取订阅配置...\${PLAIN}"
+        
+        # 尝试获取订阅内容
+        if ! curl -s -o /tmp/subscription.yaml "\$sub_url"; then
+            echo -e "\${RED}无法获取订阅内容，请检查链接是否正确或网络连接\${PLAIN}"
+            exit 1
+        fi
+        
+        # 检查是否为有效的clash/mihomo配置
+        if ! grep -q "^proxies:" /tmp/subscription.yaml; then
+            echo -e "\${RED}订阅内容不是有效的clash/mihomo配置文件\${PLAIN}"
+            exit 1
+        fi
+        
+        echo -e "\${GREEN}成功获取订阅配置\${PLAIN}"
+        
+        # 提取并合并配置
+        
+        # 获取模板中的proxies部分之前的内容
+        sed -n '1,/^proxies:/p' "\$CONFIG_TEMPLATE" | sed '/^proxies:/d' > \$CONF_DIR/config.yaml
+        
+        # 获取订阅中的proxies及之后的内容 
+        sed -n '/^proxies:/,$p' /tmp/subscription.yaml >> \$CONF_DIR/config.yaml
+        
+        # 替换配置文件中的VPS_IP
+        sed -i "s/VPS_IP/\$MIHOMO_IP/g" \$CONF_DIR/config.yaml
+        
+        echo -e "\${GREEN}已生成配置文件\${PLAIN}"
+    else
+        update_state "config_type" "custom"
+        echo -e "\${CYAN}将使用自定义配置文件\${PLAIN}"
+        
+        # 复制配置模板
+        cp "\$CONFIG_TEMPLATE" \$CONF_DIR/config.yaml
+        
+        # 替换配置文件中的VPS_IP
+        sed -i "s/VPS_IP/\$MIHOMO_IP/g" \$CONF_DIR/config.yaml
+        
+        echo -e "\${YELLOW}注意: 您需要手动编辑配置文件以设置您的代理节点\${PLAIN}"
+        echo -e "\${YELLOW}配置文件路径: \$CONF_DIR/config.yaml\${PLAIN}"
+        echo -e "\${YELLOW}您可以使用nano或vim进行编辑:\${PLAIN}"
+        echo -e "\${YELLOW}  nano \$CONF_DIR/config.yaml\${PLAIN}"
+        echo -e "\${YELLOW}或者\${PLAIN}"
+        echo -e "\${YELLOW}  vim \$CONF_DIR/config.yaml\${PLAIN}"
     fi
-    
-    # 检查是否为有效的clash/mihomo配置
-    if ! grep -q "^proxies:" /tmp/subscription.yaml; then
-        echo -e "\${RED}订阅内容不是有效的clash/mihomo配置文件\${PLAIN}"
-        exit 1
-    fi
-    
-    echo -e "\${GREEN}成功获取订阅配置\${PLAIN}"
-    
-    # 提取并合并配置
-    
-    # 获取模板中的proxies部分之前的内容
-    sed -n '1,/^proxies:/p' "\$CONFIG_TEMPLATE" | sed '/^proxies:/d' > \$CONF_DIR/config.yaml
-    
-    # 获取订阅中的proxies及之后的内容 
-    sed -n '/^proxies:/,$p' /tmp/subscription.yaml >> \$CONF_DIR/config.yaml
-    
-    # 替换配置文件中的VPS_IP
-    sed -i "s/VPS_IP/\$MIHOMO_IP/g" \$CONF_DIR/config.yaml
-    
-    echo -e "\${GREEN}已生成配置文件\${PLAIN}"
-else
-    update_state "config_type" "custom"
-    echo -e "\${CYAN}将使用自定义配置文件\${PLAIN}"
-    
-    # 复制配置模板
-    cp "\$CONFIG_TEMPLATE" \$CONF_DIR/config.yaml
-    
-    # 替换配置文件中的VPS_IP
-    sed -i "s/VPS_IP/\$MIHOMO_IP/g" \$CONF_DIR/config.yaml
-    
-    echo -e "\${YELLOW}注意: 您需要手动编辑配置文件以设置您的代理节点\${PLAIN}"
-    echo -e "\${YELLOW}配置文件路径: \$CONF_DIR/config.yaml\${PLAIN}"
-    echo -e "\${YELLOW}您可以使用nano或vim进行编辑:\${PLAIN}"
-    echo -e "\${YELLOW}  nano \$CONF_DIR/config.yaml\${PLAIN}"
-    echo -e "\${YELLOW}或者\${PLAIN}"
-    echo -e "\${YELLOW}  vim \$CONF_DIR/config.yaml\${PLAIN}"
     
     read -p "是否立即编辑配置文件? (y/n): " edit_now
     if [[ "\$edit_now" == "y" || "\$edit_now" == "Y" ]]; then
@@ -613,11 +644,30 @@ fi
 update_state "installation_stage" "下载UI文件"
 echo -e "\${CYAN}下载Mihomo UI界面...\${PLAIN}"
 
-mkdir -p \$CONF_DIR/ui
+# 检查是否已有UI文件
+EXISTING_UI=0
+if [[ -d "\$CONF_DIR/ui" ]] && ls -A "\$CONF_DIR/ui" &> /dev/null; then
+    echo -e "\${YELLOW}检测到现有UI文件\${PLAIN}"
+    read -p "是否使用现有UI文件? (y/n): " use_existing_ui
+    
+    if [[ "\$use_existing_ui" == "y" || "\$use_existing_ui" == "Y" ]]; then
+        echo -e "\${GREEN}将保留现有UI文件\${PLAIN}"
+        EXISTING_UI=1
+    else
+        echo -e "\${CYAN}将下载新UI文件，原文件将被备份\${PLAIN}"
+        if [[ -d "\$CONF_DIR/ui" ]]; then
+            mv "\$CONF_DIR/ui" "\$CONF_DIR/ui.backup.\$(date '+%Y%m%d%H%M%S')"
+        fi
+        mkdir -p \$CONF_DIR/ui
+    fi
+else
+    mkdir -p \$CONF_DIR/ui
+fi
 
-# 尝试获取最新版本
-echo -e "\${CYAN}正在检查最新版本...\${PLAIN}"
-LATEST_VERSION=\$(curl -s https://api.github.com/repos/MetaCubeX/metacubexd/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+if [[ \$EXISTING_UI -eq 0 ]]; then
+    # 尝试获取最新版本
+    echo -e "\${CYAN}正在检查最新版本...\${PLAIN}"
+    LATEST_VERSION=\$(curl -s https://api.github.com/repos/MetaCubeX/metacubexd/releases/latest | grep "tag_name" | cut -d '"' -f 4)
 
 if [[ -z "\$LATEST_VERSION" ]]; then
     echo -e "\${YELLOW}警告: 无法获取最新版本信息，使用默认版本v1.187.1\${PLAIN}"
@@ -656,6 +706,9 @@ if ! download_ui; then
         echo -e "\${YELLOW}  tar -xzf compressed-dist.tgz -C \$CONF_DIR/ui\${PLAIN}"
     fi
 fi
+else
+    echo -e "\${GREEN}使用现有UI文件，跳过UI下载步骤\${PLAIN}"
+fi
 
 # 安装mihomo
 update_state "installation_stage" "安装Mihomo"
@@ -663,7 +716,19 @@ echo -e "\${CYAN}开始安装Mihomo...\${PLAIN}"
 
 # 检查是否有现有的mihomo容器
 if docker ps -a | grep -q mihomo; then
-    echo -e "\${YELLOW}检测到已有mihomo容器，将先移除...\${PLAIN}"
+    echo -e "\${YELLOW}======================================================\${PLAIN}"
+    echo -e "\${YELLOW}检测到系统中已安装mihomo容器\${PLAIN}"
+    echo -e "\${YELLOW}继续操作将删除原有容器并重新安装mihomo\${PLAIN}"
+    echo -e "\${YELLOW}注意: /etc/mihomo 目录下的配置文件将会保留\${PLAIN}"
+    echo -e "\${YELLOW}======================================================\${PLAIN}"
+    read -p "是否继续安装? (y/n): " continue_install
+    
+    if [[ "\$continue_install" != "y" && "\$continue_install" != "Y" ]]; then
+        echo -e "\${CYAN}安装已取消，保留现有mihomo容器\${PLAIN}"
+        exit 0
+    fi
+    
+    echo -e "\${CYAN}正在停止并移除现有mihomo容器...\${PLAIN}"
     docker stop mihomo &>/dev/null
     docker rm mihomo &>/dev/null
 fi
@@ -732,7 +797,7 @@ echo -e "\${CYAN}配置宿主机与容器通信...\${PLAIN}"
 
 # 检查是否已存在接口
 if ip link show | grep -q \$MACVLAN_INTERFACE; then
-    echo -e "\${YELLOW}接口 \$MACVLAN_INTERFACE 已存在，将先移除\${PLAIN}"
+    # 静默移除已存在的接口，无需提示
     ip link del \$MACVLAN_INTERFACE &>/dev/null
 fi
 
@@ -875,185 +940,60 @@ echo -e "\${GREEN}           RouterOS 配置详细指南\${PLAIN}"
 echo -e "\${GREEN}=================================================\${PLAIN}"
 echo
 
-# 创建详细的RouterOS配置指南
+# 创建简洁的RouterOS配置指南
 cat > "\$FILES_DIR/routeros_guide.txt" << EOL
 ===================================
-      RouterOS 配置详细指南
+      RouterOS 配置简易指南
 ===================================
 
------ 配置前准备 -----
-
-1. 确认Mihomo代理机已正确安装并运行
-2. 确认Mihomo的IP地址为: $MIHOMO_IP
-3. 确保您可以访问RouterOS的管理界面
-
------ 配置方法 -----
-
-【方法一】通过WebFig界面配置（图形化配置）
-
-1. DNS服务器配置:
-   a. 登录RouterOS的WebFig界面 (通常是 http://路由器IP/webfig)
-   b. 在左侧菜单中找到并点击"IP" → "DNS"
-   c. 在"Servers"字段中，删除现有服务器，输入: $MIHOMO_IP
-   d. 点击"Apply"保存设置
-
-2. Fake-IP路由配置:
-   a. 在左侧菜单中找到并点击"IP" → "Routes"
-   b. 点击"+"按钮添加新路由
-   c. 填写以下信息:
-      • Dst. Address: 198.18.0.0/16
-      • Gateway: $MIHOMO_IP
-      • Comment: mihomo fake-ip route
-   d. 点击"Apply"保存设置
-
-【方法二】通过WinBox工具配置
-
-1. 连接到您的RouterOS:
-   a. 打开WinBox软件
-   b. 输入路由器IP地址和登录凭据
-   c. 点击"Connect"连接到路由器
-
-2. DNS服务器配置:
-   a. 在左侧菜单中找到并点击"IP" → "DNS"
-   b. 在"Servers"字段中，删除现有服务器，输入: $MIHOMO_IP
-   c. 点击"OK"保存设置
-
-3. Fake-IP路由配置:
-   a. 在左侧菜单中找到并点击"IP" → "Routes"
-   b. 点击"+"按钮添加新路由
-   c. 填写以下信息:
-      • Dst. Address: 198.18.0.0/16
-      • Gateway: $MIHOMO_IP
-      • Comment: mihomo fake-ip route
-   d. 点击"OK"保存设置
-
-【方法三】通过Terminal命令配置（最简单）
-
-1. 在RouterOS中打开Terminal:
-   a. 在WebFig界面，点击顶部菜单中的"Terminal"图标
-   b. 在WinBox中，点击左侧栏的"New Terminal"按钮
-
-2. 复制并粘贴以下全部命令:
+----- 配置命令 -----
 
 /ip dns set servers=$MIHOMO_IP
 /ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment="mihomo fake-ip route"
 
-3. 按Enter键执行命令
+----- 配置方法 -----
+
+【WebFig/WinBox配置】
+1. DNS配置: IP → DNS → 设置Servers为$MIHOMO_IP
+2. 路由配置: IP → Routes → 添加路由198.18.0.0/16指向$MIHOMO_IP
+
+【Terminal命令配置】
+复制粘贴上方命令到RouterOS Terminal中执行即可
 
 ----- 验证配置 -----
 
-执行以下命令检查配置是否生效:
+1. 尝试访问google.com等网站
+2. 运行nslookup google.com检查DNS解析
+3. 访问http://$MIHOMO_IP:9090/ui查看连接状态
 
-1. 检查DNS设置:
-   /ip dns print
+----- 其他路由器配置 -----
 
-   应显示: servers: $MIHOMO_IP
-
-2. 检查路由设置:
-   /ip route print where comment="mihomo fake-ip route"
-
-   应显示一条目标地址为198.18.0.0/16，网关为$MIHOMO_IP的路由
-
------ 进阶配置（可选） -----
-
-如果您想配置DNS解析的默认规则：
-
-1. 设置DNS静态记录:
-   /ip dns static add name=example.com address=198.18.0.1 comment="mihomo解析"
-
-2. 设置DNS缓存大小:
-   /ip dns set cache-size=2048KiB
-
-3. 启用DNS缓存:
-   /ip dns set allow-remote-requests=yes
-
------ 故障排查 -----
-
-1. DNS不工作:
-   • 检查Mihomo代理机是否运行正常
-   • 检查路由器与Mihomo间的网络连接: ping $MIHOMO_IP
-   • 尝试重启DNS服务: /ip dns cache flush
-
-2. 网站无法访问:
-   • 检查fake-ip路由是否正确添加
-   • 检查Mihomo代理配置是否正确
-
-3. 性能问题:
-   • 调整DNS缓存大小
-   • 检查Mihomo代理机器的负载情况
-
------ 备注 -----
-
-• 配置完成后无需重启路由器，更改会立即生效
-• 如遇问题，可以随时恢复为默认DNS设置:
-  /ip dns set servers=8.8.8.8,8.8.4.4
-
+1. OpenWrt: 网络→DHCP/DNS→设置DNS为$MIHOMO_IP，添加静态路由
+2. 爱快: DNS设置为$MIHOMO_IP，添加静态路由
+3. 普通路由器: 设置DNS服务器为$MIHOMO_IP
 ===================================
 EOL
 
-echo -e "\${YELLOW}===== RouterOS 配置命令 =====\${PLAIN}"
-cat "\$ROUTER_CONFIG_FILE" | grep -v "^#"
-echo
-
 # 打印RouterOS配置指南的摘要
-echo -e "\${CYAN}===== RouterOS 配置指南摘要 =====\${PLAIN}"
+echo -e "\${CYAN}===== RouterOS 配置命令与方式 =====\${PLAIN}"
 echo
-echo -e "\${CYAN}【方法一】通过WebFig界面配置（图形化配置）\${PLAIN}"
-echo -e "\${CYAN}1. DNS服务器配置:\${PLAIN}"
-echo -e "   在WebFig中: IP → DNS → 修改Servers字段为 \${YELLOW}$MIHOMO_IP\${PLAIN}"
+echo -e "\${YELLOW}/ip dns set servers=$MIHOMO_IP${PLAIN}"
+echo -e "\${YELLOW}/ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment=\"mihomo fake-ip route\"${PLAIN}"
 echo
-echo -e "\${CYAN}2. Fake-IP路由配置:\${PLAIN}"
-echo -e "   在WebFig中: IP → Routes → 添加新路由\${PLAIN}"
-echo -e "   Dst. Address: \${YELLOW}198.18.0.0/16\${PLAIN}"
-echo -e "   Gateway: \${YELLOW}$MIHOMO_IP\${PLAIN}"
-echo 
-echo -e "\${CYAN}【方法二】通过WinBox工具配置\${PLAIN}"
-echo -e "\${CYAN}在WinBox中访问相同的配置界面，操作流程类似\${PLAIN}"
+echo -e "【方法一】WebFig界面: IP→DNS→设置服务器为\${YELLOW}$MIHOMO_IP\${PLAIN}，添加路由\${YELLOW}198.18.0.0/16\${PLAIN}到\${YELLOW}$MIHOMO_IP\${PLAIN}"
+echo -e "【方法二】WinBox工具: 同上述图形操作"
+echo -e "【方法三】Terminal命令: 复制粘贴上方命令执行"
 echo
-echo -e "\${CYAN}【方法三】通过Terminal命令配置（最简单）\${PLAIN}"
-echo -e "\${CYAN}1. 在WebFig或WinBox中打开Terminal\${PLAIN}"
-echo -e "\${CYAN}2. 复制以下命令并粘贴执行:\${PLAIN}"
-echo -e "\${YELLOW}/ip dns set servers=$MIHOMO_IP\${PLAIN}"
-echo -e "\${YELLOW}/ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment=\"mihomo fake-ip route\"\${PLAIN}"
+echo -e "\${CYAN}===== 其他路由器配置 =====\${PLAIN}"
 echo
-echo -e "\${CYAN}详细配置指南已保存到: \$FILES_DIR/routeros_guide.txt\${PLAIN}"
-echo
-
-echo -e "\${CYAN}===== 非RouterOS路由器配置 =====\${PLAIN}"
-echo
-echo -e "\${CYAN}1. OpenWrt路由器:\${PLAIN}"
-echo -e "   a) DNS配置:\${PLAIN}"
-echo -e "      - 登录LuCI界面，进入 网络 → DHCP/DNS → DNS转发\${PLAIN}"
-echo -e "      - 添加 \${YELLOW}$MIHOMO_IP\${PLAIN} 作为自定义DNS服务器\${PLAIN}"
-echo -e "   b) 路由配置:\${PLAIN}"
-echo -e "      - 进入 网络 → 路由 → 静态路由\${PLAIN}"
-echo -e "      - 添加目标 \${YELLOW}198.18.0.0/16\${PLAIN}，网关 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
-echo
-echo -e "\${CYAN}2. 爱快(iKuai)路由器:\${PLAIN}"
-echo -e "   a) DNS配置:\${PLAIN}"
-echo -e "      - 进入 基本设置 → DNS设置\${PLAIN}"
-echo -e "      - 填写首选DNS为 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
-echo -e "   b) 路由配置:\${PLAIN}" 
-echo -e "      - 进入 路由设置 → 静态路由\${PLAIN}"
-echo -e "      - 添加目标网段 \${YELLOW}198.18.0.0/16\${PLAIN}，下一跳 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
-echo
-echo -e "\${CYAN}3. 普通家用路由器:\${PLAIN}"
-echo -e "   a) DNS配置:\${PLAIN}"
-echo -e "      - 进入路由器设置，找到DHCP或DNS设置\${PLAIN}"
-echo -e "      - 设置主DNS服务器为 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
-echo -e "   b) 如支持静态路由:\${PLAIN}"
-echo -e "      - 在高级设置中找到静态路由选项\${PLAIN}"
-echo -e "      - 添加目标IP \${YELLOW}198.18.0.0\${PLAIN}，子网掩码 \${YELLOW}255.255.0.0\${PLAIN}，网关 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
-echo -e "   c) 如不支持静态路由:\${PLAIN}"
-echo -e "      - 仅设置DNS即可，或在设备上手动配置代理\${PLAIN}"
+echo -e "1. OpenWrt: DNS设置为\${YELLOW}$MIHOMO_IP\${PLAIN}，添加静态路由\${YELLOW}198.18.0.0/16\${PLAIN}到\${YELLOW}$MIHOMO_IP\${PLAIN}"
+echo -e "2. 爱快(iKuai): DNS设置为\${YELLOW}$MIHOMO_IP\${PLAIN}，添加静态路由\${YELLOW}198.18.0.0/16\${PLAIN}到\${YELLOW}$MIHOMO_IP\${PLAIN}"
+echo -e "3. 普通路由器: 设置DNS为\${YELLOW}$MIHOMO_IP\${PLAIN}，支持静态路由则添加\${YELLOW}198.18.0.0/16\${PLAIN}到\${YELLOW}$MIHOMO_IP\${PLAIN}"
 echo
 
 echo -e "\${CYAN}===== 验证配置 =====\${PLAIN}"
 echo
-echo -e "配置完成后，请验证:\${PLAIN}"
-echo -e "1. 使用任意设备尝试访问 \${YELLOW}google.com\${PLAIN} 等网站\${PLAIN}"
-echo -e "2. 检查是否能正常解析域名: \${YELLOW}nslookup google.com\${PLAIN}"
-echo -e "3. 访问Mihomo控制面板: \${YELLOW}http://$MIHOMO_IP:9090/ui\${PLAIN} 查看连接状态\${PLAIN}"
+echo -e "验证方法: 访问\${YELLOW}google.com\${PLAIN}，运行\${YELLOW}nslookup google.com\${PLAIN}，查看面板\${YELLOW}http://$MIHOMO_IP:9090/ui\${PLAIN}"
 echo
 
 echo -e "\${GREEN}RouterOS配置脚本执行完成\${PLAIN}"
@@ -1068,7 +1008,10 @@ EOF
 
 # 重新生成配置文件
 regenerate_config() {
-    echo -e "${CYAN}重新生成配置文件...${PLAIN}"
+    clear
+    echo -e "${CYAN}======================================================${PLAIN}"
+    echo -e "${CYAN}              更新Mihomo配置文件${PLAIN}"
+    echo -e "${CYAN}======================================================${PLAIN}"
     
     # 检查mihomo是否已安装
     if [[ ! -d "$CONF_DIR" ]]; then
@@ -1076,148 +1019,493 @@ regenerate_config() {
         mkdir -p "$CONF_DIR"
     fi
     
-    # 备份原配置文件（如果存在）
-    if [[ -f "$CONF_DIR/config.yaml" ]]; then
-        local backup_file="$CONF_DIR/config.yaml.backup.$(date '+%Y%m%d%H%M%S')"
-        echo -e "${YELLOW}备份原配置文件到: $backup_file${PLAIN}"
-        cp "$CONF_DIR/config.yaml" "$backup_file"
-    fi
-    
     # 获取mihomo IP
     local mihomo_ip=$(get_state_value "mihomo_ip")
     if [[ -z "$mihomo_ip" ]]; then
-        echo -e "${RED}错误: 未找到mihomo IP地址配置，请先设置IP地址${PLAIN}"
-        read -p "按任意键返回主菜单..." key
+        echo -e "${RED}错误: 未找到mihomo IP地址配置${PLAIN}"
+        echo -e "${YELLOW}将为您设置Mihomo IP地址...${PLAIN}"
+        setup_mihomo_ip
+        mihomo_ip=$(get_state_value "mihomo_ip")
+    fi
+    
+    # 确认操作
+    echo -e "${YELLOW}此操作将更新Mihomo的配置文件。请选择配置方式:${PLAIN}"
+    echo -e "${CYAN}1. 使用订阅链接更新配置${PLAIN}"
+    echo -e "${CYAN}2. 使用默认模板更新配置${PLAIN}"
+    echo -e "${CYAN}0. 返回主菜单${PLAIN}"
+    read -p "请选择 [0-2]: " update_choice
+    
+    if [[ "$update_choice" == "0" ]]; then
         return
     fi
     
-    # 获取配置类型
-    local config_type=$(get_state_value "config_type")
-    local sub_url=$(get_state_value "subscription_url")
+    # 备份原配置文件（如果存在）
+    if [[ -f "$CONF_DIR/config.yaml" ]]; then
+        local backup_file="$CONF_DIR/config.yaml.backup.$(date '+%Y%m%d%H%M%S')"
+        echo -e "${YELLOW}正在备份原配置文件...${PLAIN}"
+        cp "$CONF_DIR/config.yaml" "$backup_file"
+        echo -e "${GREEN}备份完成: $backup_file${PLAIN}"
+    fi
     
-    # 根据配置类型生成新配置
-    if [[ "$config_type" == "subscription" && -n "$sub_url" ]]; then
-        echo -e "${CYAN}使用订阅链接重新生成配置文件${PLAIN}"
-        echo -e "${CYAN}订阅链接: $sub_url${PLAIN}"
+    if [[ "$update_choice" == "1" ]]; then
+        # 使用订阅链接
+        echo -e "${CYAN}请输入您的机场订阅链接:${PLAIN}"
+        read -p "订阅链接: " sub_url
         
-        # 获取订阅内容
+        if [[ -z "$sub_url" ]]; then
+            echo -e "${RED}错误: 订阅链接不能为空${PLAIN}"
+            read -p "按任意键返回..." key
+            return
+        fi
+        
+        update_state "config_type" "subscription"
+        update_state "subscription_url" "$sub_url"
+        
+        echo -e "${CYAN}正在获取订阅配置...${PLAIN}"
+        
+        # 尝试获取订阅内容
         if ! curl -s -o /tmp/subscription.yaml "$sub_url"; then
-            echo -e "${RED}无法获取订阅内容，请检查链接是否正确或网络连接${PLAIN}"
-            read -p "按任意键返回主菜单..." key
+            echo -e "${RED}错误: 无法获取订阅内容${PLAIN}"
+            echo -e "${YELLOW}请检查:${PLAIN}"
+            echo -e "${YELLOW}1. 订阅链接是否正确${PLAIN}"
+            echo -e "${YELLOW}2. 网络连接是否正常${PLAIN}"
+            echo -e "${YELLOW}3. 订阅服务器是否可访问${PLAIN}"
+            read -p "按任意键返回..." key
             return
         fi
         
         # 检查是否为有效的clash/mihomo配置
         if ! grep -q "^proxies:" /tmp/subscription.yaml; then
-            echo -e "${RED}订阅内容不是有效的clash/mihomo配置文件${PLAIN}"
-            read -p "按任意键返回主菜单..." key
+            echo -e "${RED}错误: 订阅内容不是有效的clash/mihomo配置${PLAIN}"
+            echo -e "${YELLOW}请确保订阅链接提供的是Clash/Mihomo格式${PLAIN}"
+            read -p "按任意键返回..." key
             return
         fi
         
-        echo -e "${GREEN}成功获取订阅配置${PLAIN}"
+        echo -e "${GREEN}成功获取订阅配置!${PLAIN}"
+        
+        # 解码订阅链接内容
+        echo -e "${CYAN}解析订阅内容...${PLAIN}"
         
         # 提取并合并配置
+        echo -e "${CYAN}生成新配置文件...${PLAIN}"
         # 获取模板中的proxies部分之前的内容
         sed -n '1,/^proxies:/p' "$CONFIG_TEMPLATE" | sed '/^proxies:/d' > "$CONF_DIR/config.yaml"
         
         # 获取订阅中的proxies及之后的内容 
         sed -n '/^proxies:/,$p' /tmp/subscription.yaml >> "$CONF_DIR/config.yaml"
+        
     else
-        echo -e "${CYAN}使用默认模板重新生成配置文件${PLAIN}"
-        # 复制配置模板
+        # 使用默认模板
+        update_state "config_type" "custom"
+        update_state "subscription_url" ""
+        
+        echo -e "${CYAN}使用默认模板生成配置文件...${PLAIN}"
         cp "$CONFIG_TEMPLATE" "$CONF_DIR/config.yaml"
+        
+        echo -e "${YELLOW}注意: 您需要手动编辑配置文件以设置您的代理节点${PLAIN}"
+        echo -e "${YELLOW}配置文件路径: $CONF_DIR/config.yaml${PLAIN}"
+        
+        read -p "是否立即编辑配置文件? (y/n): " edit_now
+        if [[ "$edit_now" == "y" || "$edit_now" == "Y" ]]; then
+            if command -v nano &> /dev/null; then
+                nano "$CONF_DIR/config.yaml"
+            elif command -v vim &> /dev/null; then
+                vim "$CONF_DIR/config.yaml"
+            else
+                echo -e "${RED}未找到编辑器(nano/vim)，请安装后手动编辑配置文件${PLAIN}"
+            fi
+        fi
     fi
     
     # 替换配置文件中的VPS_IP
     sed -i "s/VPS_IP/$mihomo_ip/g" "$CONF_DIR/config.yaml"
     
-    echo -e "${GREEN}配置文件重新生成完成: $CONF_DIR/config.yaml${PLAIN}"
+    echo -e "${GREEN}======================================================${PLAIN}"
+    echo -e "${GREEN}配置文件已更新: $CONF_DIR/config.yaml${PLAIN}"
     
     # 如果mihomo容器正在运行，重启它以应用新配置
     if docker ps | grep -q mihomo; then
-        echo -e "${YELLOW}检测到mihomo容器正在运行，将重启以应用新配置...${PLAIN}"
+        echo -e "${YELLOW}检测到mihomo容器正在运行，正在重启以应用新配置...${PLAIN}"
         docker restart mihomo
-        echo -e "${GREEN}mihomo容器已重启，新配置已应用${PLAIN}"
+        echo -e "${GREEN}mihomo容器已重启，新配置已应用!${PLAIN}"
+        echo -e "${GREEN}控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
+    else
+        echo -e "${YELLOW}未检测到运行中的mihomo容器，新配置将在下次启动时应用${PLAIN}"
+        echo -e "${YELLOW}您可以选择菜单中的'1. 配置代理机'选项启动mihomo${PLAIN}"
     fi
+    echo -e "${GREEN}======================================================${PLAIN}"
     
     read -p "按任意键返回主菜单..." key
 }
 
 # 显示主菜单
 show_menu() {
+    clear
+    
+    # 获取当前状态
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    local stage=$(get_state_value "installation_stage")
+    local timestamp=$(get_state_value "timestamp")
+    
+    # 标题
     echo -e "${CYAN}===========================================================${PLAIN}"
     echo -e "${CYAN}              Mihomo 一键安装引导脚本${PLAIN}"
     echo -e "${CYAN}===========================================================${PLAIN}"
-    echo -e "${CYAN}  1. 配置代理机${PLAIN}"
-    echo -e "${CYAN}  2. 配置RouterOS${PLAIN}"
-    echo -e "${CYAN}  3. 检查安装状态${PLAIN}"
-    echo -e "${CYAN}  4. 重新设置mihomo IP地址${PLAIN}"
-    echo -e "${CYAN}  5. 重新生成配置文件${PLAIN}"
-    echo -e "${CYAN}  0. 退出${PLAIN}"
+    echo -e "${CYAN}请按步骤完成安装:${PLAIN}"
+    echo
+    
+    # 整合安装步骤和操作选项
+    # 步骤1: 初始化
+    if [[ -n "$mihomo_ip" ]]; then
+        echo -e " ${GREEN}[✓] 1. 初始化设置${PLAIN}    - ${GREEN}已完成 - IP: $mihomo_ip${PLAIN}"
+    else
+        echo -e " ${CYAN}[1] 1. 初始化设置${PLAIN}    - ${YELLOW}配置mihomo IP地址 ${RED}[未完成]${PLAIN}"
+    fi
+    
+    # 步骤2: 代理机配置
+    if [[ "$stage" == "配置完成" ]]; then
+        echo -e " ${GREEN}[✓] 2. 配置代理机${PLAIN}    - ${GREEN}已完成 - mihomo已安装并运行${PLAIN}"
+    elif [[ -n "$mihomo_ip" ]]; then
+        echo -e " ${CYAN}[2] 2. 配置代理机${PLAIN}    - ${YELLOW}安装Docker和mihomo${PLAIN}"
+    else
+        echo -e " ${GRAY}[2] 2. 配置代理机${PLAIN}    - ${GRAY}请先完成步骤1${PLAIN}"
+    fi
+    
+    # 步骤3: 路由器配置
+    if [[ "$stage" == "配置完成" ]]; then
+        echo -e " ${CYAN}[3] 3. 配置路由器${PLAIN}    - ${YELLOW}生成RouterOS配置命令${PLAIN}"
+    else
+        echo -e " ${GRAY}[3] 3. 配置路由器${PLAIN}    - ${GRAY}请先完成步骤2${PLAIN}"
+    fi
+    
+    echo -e "${CYAN}----------------------------------------------------------${PLAIN}"
+    echo -e " ${GREEN}[4] 4. 更新配置文件${PLAIN}  - ${YELLOW}更新订阅或修改配置${PLAIN}"
+    echo -e " ${GREEN}[5] 5. 检查安装状态${PLAIN}  - ${YELLOW}查看服务运行情况${PLAIN}"
+    echo -e " ${GREEN}[0] 0. 退出脚本${PLAIN}"
     echo -e "${CYAN}===========================================================${PLAIN}"
     
     # 显示当前状态
-    if [[ -f "$STATE_FILE" ]]; then
-        local mihomo_ip=$(get_state_value "mihomo_ip")
-        local stage=$(get_state_value "installation_stage")
-        local timestamp=$(get_state_value "timestamp")
-        
-        echo -e "${YELLOW}当前状态:${PLAIN}"
-        [[ -n "$mihomo_ip" ]] && echo -e "${YELLOW}- Mihomo IP: $mihomo_ip${PLAIN}"
-        [[ -n "$stage" ]] && echo -e "${YELLOW}- 安装阶段: $stage${PLAIN}"
-        [[ -n "$timestamp" ]] && echo -e "${YELLOW}- 最后更新: $timestamp${PLAIN}"
-        echo
+    if [[ -n "$mihomo_ip" ]]; then
+        echo -e "${YELLOW}系统信息:${PLAIN}"
+        echo -e "${YELLOW}• Mihomo IP: ${GREEN}$mihomo_ip${PLAIN}"
+        echo -e "${YELLOW}• 安装阶段: ${GREEN}$stage${PLAIN}"
+        echo -e "${YELLOW}• 更新时间: ${GREEN}$timestamp${PLAIN}"
+        if [[ "$stage" == "配置完成" ]]; then
+            echo -e "${YELLOW}• 控制面板: ${GREEN}http://$mihomo_ip:9090/ui${PLAIN}"
+        fi
     fi
+    echo
     
-    read -p "请选择 [0-5]: " choice
+    read -p "请输入选择 [0-5]: " choice
     
     case $choice in
         1)
-            if [[ -f "$PROXY_SCRIPT" ]]; then
-                echo -e "${CYAN}执行代理机配置脚本...${PLAIN}"
-                bash "$PROXY_SCRIPT"
-            else
-                echo -e "${RED}代理机配置脚本不存在，请先设置IP地址${PLAIN}"
+            # 初始化设置
+            clear
+            echo -e "${CYAN}======================================================${PLAIN}"
+            echo -e "${CYAN}              步骤1: 初始化设置${PLAIN}"
+            echo -e "${CYAN}======================================================${PLAIN}"
+            echo -e "${YELLOW}这一步将设置mihomo的IP地址并生成配置脚本${PLAIN}"
+            echo
+            
+            local mihomo_ip=$(get_state_value "mihomo_ip")
+            if [[ -n "$mihomo_ip" ]]; then
+                echo -e "${YELLOW}检测到已有配置: IP = $mihomo_ip${PLAIN}"
+                read -p "是否重新设置IP地址? (y/n): " reset_ip
+                if [[ "$reset_ip" == "y" || "$reset_ip" == "Y" ]]; then
+                    echo -e "${CYAN}正在重新设置IP地址...${PLAIN}"
+                else
+                    echo -e "${YELLOW}保留已有配置，返回主菜单...${PLAIN}"
+                    sleep 1
+                    show_menu
+                    return
+                fi
             fi
-            read -p "按任意键继续..." key
+            
+            # 设置mihomo IP地址
+            setup_mihomo_ip
+            
+            # 生成配置脚本
+            echo -e "${CYAN}正在生成配置脚本...${PLAIN}"
+            generate_proxy_script
+            generate_router_script
+            
+            mihomo_ip=$(get_state_value "mihomo_ip")
+            echo -e "\n${GREEN}======================================================${PLAIN}"
+            echo -e "${GREEN}步骤1完成! Mihomo IP地址: ${YELLOW}$mihomo_ip${PLAIN}"
+            echo -e "${GREEN}现在您可以进行步骤2: 配置代理机${PLAIN}"
+            echo -e "${GREEN}======================================================${PLAIN}"
+            
+            read -p "按任意键返回主菜单..." key
             show_menu
             ;;
         2)
-            if [[ -f "$ROUTER_SCRIPT" ]]; then
-                echo -e "${CYAN}执行RouterOS配置脚本...${PLAIN}"
-                bash "$ROUTER_SCRIPT"
-            else
-                echo -e "${RED}RouterOS配置脚本不存在，请先设置IP地址${PLAIN}"
+            # 配置代理机
+            local mihomo_ip=$(get_state_value "mihomo_ip")
+            local stage=$(get_state_value "installation_stage")
+            
+            # 检查是否已完成初始化
+            if [[ -z "$mihomo_ip" ]]; then
+                echo -e "${YELLOW}======================================================${PLAIN}"
+                echo -e "${YELLOW}您需要先完成步骤1: 初始化设置${PLAIN}"
+                echo -e "${YELLOW}======================================================${PLAIN}"
+                read -p "是否立即进行初始化? (y/n): " do_init
+                if [[ "$do_init" == "y" || "$do_init" == "Y" ]]; then
+                    echo -e "${CYAN}正在跳转到步骤1...${PLAIN}"
+                    sleep 1
+                    
+                    # 调用选项1的逻辑
+                    clear
+                    echo -e "${CYAN}======================================================${PLAIN}"
+                    echo -e "${CYAN}              步骤1: 初始化设置${PLAIN}"
+                    echo -e "${CYAN}======================================================${PLAIN}"
+                    echo -e "${YELLOW}这一步将设置mihomo的IP地址并生成配置脚本${PLAIN}"
+                    echo
+                    
+                    # 设置mihomo IP地址
+                    setup_mihomo_ip
+                    
+                    # 生成配置脚本
+                    echo -e "${CYAN}正在生成配置脚本...${PLAIN}"
+                    generate_proxy_script
+                    generate_router_script
+                    
+                    mihomo_ip=$(get_state_value "mihomo_ip")
+                    echo -e "\n${GREEN}======================================================${PLAIN}"
+                    echo -e "${GREEN}步骤1完成! Mihomo IP地址: ${YELLOW}$mihomo_ip${PLAIN}"
+                    echo -e "${GREEN}现在继续步骤2: 配置代理机${PLAIN}"
+                    echo -e "${GREEN}======================================================${PLAIN}"
+                    sleep 1
+                else
+                    show_menu
+                    return
+                fi
             fi
-            read -p "按任意键继续..." key
+            
+            # 执行代理机配置
+            clear
+            echo -e "${CYAN}======================================================${PLAIN}"
+            echo -e "${CYAN}              步骤2: 配置代理机${PLAIN}"
+            echo -e "${CYAN}======================================================${PLAIN}"
+            
+            # 检查是否已经安装了mihomo
+            if docker ps -a | grep -q mihomo && [[ "$stage" == "配置完成" ]]; then
+                echo -e "${YELLOW}检测到mihomo已经安装，继续操作将重新安装${PLAIN}"
+                echo -e "${YELLOW}原配置文件将保留在 /etc/mihomo 目录下${PLAIN}"
+                read -p "是否继续重新安装？ (y/n): " confirm
+                if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+                    show_menu
+                    return
+                fi
+            fi
+            
+            if [[ -f "$PROXY_SCRIPT" ]]; then
+                echo -e "${CYAN}正在安装Docker和Mihomo...${PLAIN}"
+                echo -e "${YELLOW}此过程可能需要几分钟，请耐心等待...${PLAIN}"
+                echo
+                bash "$PROXY_SCRIPT"
+                echo -e "\n${GREEN}======================================================${PLAIN}"
+                echo -e "${GREEN}步骤2完成! Mihomo代理已安装并启动${PLAIN}"
+                echo -e "${GREEN}您现在可以使用以下地址访问控制面板:${PLAIN}"
+                echo -e "${GREEN}控制面板: http://${mihomo_ip}:9090/ui${PLAIN}"
+                echo -e "${GREEN}现在请前往步骤3: 配置路由器${PLAIN}"
+                echo -e "${GREEN}======================================================${PLAIN}"
+            else
+                echo -e "${RED}错误: 配置脚本不存在${PLAIN}"
+                echo -e "${YELLOW}请返回主菜单重新执行步骤1: 初始化设置${PLAIN}"
+            fi
+            
+            read -p "按任意键返回主菜单..." key
             show_menu
             ;;
         3)
-            if ([[ -f "$STATE_FILE" ]]); then
-                echo -e "${CYAN}当前安装状态:${PLAIN}"
-                cat "$STATE_FILE" | jq .
-            else
-                echo -e "${RED}状态文件不存在${PLAIN}"
+            # 配置路由器
+            local mihomo_ip=$(get_state_value "mihomo_ip")
+            local stage=$(get_state_value "installation_stage")
+            
+            # 检查是否已完成初始化
+            if [[ -z "$mihomo_ip" ]]; then
+                echo -e "${YELLOW}======================================================${PLAIN}"
+                echo -e "${YELLOW}您需要先完成步骤1: 初始化设置${PLAIN}"
+                echo -e "${YELLOW}======================================================${PLAIN}"
+                read -p "是否立即进行初始化? (y/n): " do_init
+                if [[ "$do_init" == "y" || "$do_init" == "Y" ]]; then
+                    # 选项1的逻辑
+                    choice=1
+                    continue
+                else
+                    show_menu
+                    return
+                fi
             fi
-            read -p "按任意键继续..." key
+            
+            # 检查是否已完成代理机配置
+            if [[ "$stage" != "配置完成" ]]; then
+                echo -e "${YELLOW}======================================================${PLAIN}"
+                echo -e "${YELLOW}建议先完成步骤2: 配置代理机${PLAIN}"
+                echo -e "${YELLOW}否则Mihomo可能无法正常工作${PLAIN}"
+                echo -e "${YELLOW}======================================================${PLAIN}"
+                read -p "是否继续生成路由器配置? (y/n): " continue_router
+                if [[ "$continue_router" != "y" && "$continue_router" != "Y" ]]; then
+                    show_menu
+                    return
+                fi
+            fi
+            
+            # 执行路由器配置
+            clear
+            echo -e "${CYAN}======================================================${PLAIN}"
+            echo -e "${CYAN}              步骤3: 配置路由器${PLAIN}"
+            echo -e "${CYAN}======================================================${PLAIN}"
+            
+            if [[ -f "$ROUTER_SCRIPT" ]]; then
+                echo -e "${CYAN}生成RouterOS配置命令...${PLAIN}"
+                bash "$ROUTER_SCRIPT"
+                echo -e "\n${GREEN}======================================================${PLAIN}"
+                echo -e "${GREEN}步骤3完成! 路由器配置指南已生成${PLAIN}"
+                echo -e "${GREEN}请按照指南配置您的路由器，完成后即可使用Mihomo代理服务${PLAIN}"
+                echo -e "${GREEN}======================================================${PLAIN}"
+            else
+                echo -e "${RED}错误: 路由器配置脚本不存在${PLAIN}"
+                echo -e "${YELLOW}请返回主菜单重新执行步骤1: 初始化设置${PLAIN}"
+            fi
+            
+            read -p "按任意键返回主菜单..." key
             show_menu
             ;;
         4)
-            setup_mihomo_ip
-            generate_proxy_script
-            generate_router_script
-            show_menu
-            ;;
-        5)
+            # 更新配置文件
             regenerate_config
             show_menu
             ;;
+        5)
+            # 检查安装状态
+            clear
+            echo -e "${CYAN}======================================================${PLAIN}"
+            echo -e "${CYAN}              Mihomo 安装状态检查${PLAIN}"
+            echo -e "${CYAN}======================================================${PLAIN}"
+            
+            if [[ -f "$STATE_FILE" ]]; then
+                local mihomo_ip=$(get_state_value "mihomo_ip")
+                local stage=$(get_state_value "installation_stage")
+                local timestamp=$(get_state_value "timestamp")
+                
+                echo -e "${YELLOW}● 步骤完成情况:${PLAIN}"
+                if [[ -n "$mihomo_ip" ]]; then
+                    echo -e "${GREEN}  ✓ 步骤1: 初始化已完成 - IP: $mihomo_ip${PLAIN}"
+                else
+                    echo -e "${RED}  ✗ 步骤1: 初始化未完成${PLAIN}"
+                fi
+                
+                if [[ "$stage" == "配置完成" ]]; then
+                    echo -e "${GREEN}  ✓ 步骤2: 代理机配置已完成${PLAIN}"
+                else
+                    echo -e "${RED}  ✗ 步骤2: 代理机配置未完成${PLAIN}"
+                fi
+                echo
+                
+                echo -e "${YELLOW}● 状态文件详情:${PLAIN}"
+                if command -v jq &> /dev/null; then
+                    cat "$STATE_FILE" | jq
+                else
+                    cat "$STATE_FILE"
+                fi
+                echo
+                
+                echo -e "${YELLOW}● Docker容器状态:${PLAIN}"
+                if command -v docker &> /dev/null; then
+                    if docker ps | grep -q mihomo; then
+                        echo -e "${GREEN}  ✓ Mihomo 容器正在运行${PLAIN}"
+                        docker ps | grep mihomo
+                    elif docker ps -a | grep -q mihomo; then
+                        echo -e "${RED}  ✗ Mihomo 容器存在但未运行${PLAIN}"
+                        docker ps -a | grep mihomo
+                        echo -e "${YELLOW}  提示: 可以使用以下命令启动容器:${PLAIN}"
+                        echo -e "${YELLOW}  docker start mihomo${PLAIN}"
+                    else
+                        echo -e "${RED}  ✗ 未检测到Mihomo容器${PLAIN}"
+                        echo -e "${YELLOW}  提示: 请执行步骤2安装Mihomo${PLAIN}"
+                    fi
+                else
+                    echo -e "${RED}  ✗ Docker未安装${PLAIN}"
+                    echo -e "${YELLOW}  提示: 请执行步骤2安装Docker${PLAIN}"
+                fi
+                echo
+                
+                echo -e "${YELLOW}● 网络连通性测试:${PLAIN}"
+                if [[ -n "$mihomo_ip" ]]; then
+                    if ping -c 2 $mihomo_ip &> /dev/null; then
+                        echo -e "${GREEN}  ✓ 成功连接到Mihomo IP ($mihomo_ip)${PLAIN}"
+                    else
+                        echo -e "${RED}  ✗ 无法连接到Mihomo IP ($mihomo_ip)${PLAIN}"
+                        echo -e "${YELLOW}  提示: 请检查网络配置或重新执行步骤2${PLAIN}"
+                    fi
+                else
+                    echo -e "${RED}  ✗ 未设置Mihomo IP${PLAIN}"
+                fi
+                echo
+                
+                echo -e "${YELLOW}● 配置文件检查:${PLAIN}"
+                if [[ -d "/etc/mihomo" ]]; then
+                    echo -e "${GREEN}  ✓ 配置目录存在: /etc/mihomo${PLAIN}"
+                    
+                    if [[ -f "/etc/mihomo/config.yaml" ]]; then
+                        echo -e "${GREEN}  ✓ 配置文件存在: /etc/mihomo/config.yaml${PLAIN}"
+                        echo -e "${CYAN}    最后修改时间: $(stat -c %y /etc/mihomo/config.yaml)${PLAIN}"
+                        
+                        # 检查配置文件是否有效
+                        if grep -q "^proxies:" "/etc/mihomo/config.yaml"; then
+                            echo -e "${GREEN}  ✓ 配置文件包含代理节点${PLAIN}"
+                        else
+                            echo -e "${YELLOW}  ! 配置文件可能缺少代理节点${PLAIN}"
+                            echo -e "${YELLOW}    提示: 使用选项4更新配置文件${PLAIN}"
+                        fi
+                    else
+                        echo -e "${RED}  ✗ 配置文件不存在${PLAIN}"
+                        echo -e "${YELLOW}    提示: 使用选项4生成配置文件${PLAIN}"
+                    fi
+                    
+                    if [[ -d "/etc/mihomo/ui" ]]; then
+                        echo -e "${GREEN}  ✓ UI文件存在: /etc/mihomo/ui${PLAIN}"
+                    else
+                        echo -e "${RED}  ✗ UI文件不存在${PLAIN}"
+                        echo -e "${YELLOW}    提示: 重新执行步骤2安装UI文件${PLAIN}"
+                    fi
+                else
+                    echo -e "${RED}  ✗ 配置目录不存在${PLAIN}"
+                    echo -e "${YELLOW}    提示: 执行步骤2创建配置目录${PLAIN}"
+                fi
+                
+                if [[ -n "$mihomo_ip" && "$stage" == "配置完成" ]]; then
+                    echo
+                    echo -e "${YELLOW}● 访问信息:${PLAIN}"
+                    echo -e "${GREEN}  控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
+                    echo -e "${GREEN}  HTTP代理: $mihomo_ip:7891${PLAIN}"
+                    echo -e "${GREEN}  SOCKS5代理: $mihomo_ip:7892${PLAIN}"
+                    echo -e "${GREEN}  混合端口: $mihomo_ip:7890${PLAIN}"
+                fi
+            else
+                echo -e "${RED}状态文件不存在，无法获取安装信息${PLAIN}"
+                echo -e "${YELLOW}请执行步骤1初始化设置${PLAIN}"
+            fi
+            
+            echo -e "${CYAN}======================================================${PLAIN}"
+            read -p "按任意键返回主菜单..." key
+            show_menu
+            ;;
         0)
-            echo -e "${GREEN}感谢使用！再见！${PLAIN}"
+            # 退出
+            clear
+            echo -e "${GREEN}======================================================${PLAIN}"
+            echo -e "${GREEN}感谢使用Mihomo一键安装引导脚本!${PLAIN}"
+            echo -e "${GREEN}再见!${PLAIN}"
+            echo -e "${GREEN}======================================================${PLAIN}"
             exit 0
             ;;
         *)
             echo -e "${RED}无效的选项，请重新选择${PLAIN}"
+            sleep 1
             show_menu
             ;;
     esac
@@ -1258,23 +1546,20 @@ main() {
     # 检查配置文件模板
     check_config_template
     
-    echo -e "${CYAN}第一步: 设置mihomo IP地址...${PLAIN}"
+    # 检查是否需要设置IP地址
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    if [[ -z "$mihomo_ip" ]]; then
+        echo -e "${CYAN}初始化: 设置mihomo IP地址...${PLAIN}"
+        
+        # 设置mihomo IP地址
+        setup_mihomo_ip
+        
+        # 生成配置脚本
+        generate_proxy_script
+        generate_router_script
+    fi
     
-    # 直接设置mihomo IP地址
-    setup_mihomo_ip
-    
-    # 生成配置脚本
-    generate_proxy_script
-    generate_router_script
-    
-    echo -e "${GREEN}第一步完成: IP地址已设置为 ${MIHOMO_IP}${PLAIN}"
-    echo -e "${CYAN}接下来您可以:${PLAIN}"
-    echo -e "${CYAN}1. 配置代理机 - 安装Docker和mihomo${PLAIN}"
-    echo -e "${CYAN}2. 配置RouterOS - 设置路由器指向mihomo${PLAIN}"
-    echo -e "${CYAN}请按任意键进入菜单...${PLAIN}"
-    read -n 1
-    
-    # 显示菜单
+    # 直接进入菜单，无需中间等待
     show_menu
 }
 
