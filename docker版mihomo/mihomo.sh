@@ -13,17 +13,17 @@
 #    或者: 
 #    curl -o /opt/mihomo.sh https://your-download-url/mihomo.sh
 #
-# 2. 设置执行权限:
-#    chmod +x /opt/mihomo.sh
-#
-# 3. 运行脚本 (需要root权限):
-#    sudo bash /opt/mihomo.sh
-#    
-#    或者先切换到root用户:
-#    sudo su
+# 2. 运行脚本:
 #    bash /opt/mihomo.sh
 #    
-# 4. 查看使用帮助:
+#    注意: 脚本会自动检查权限并帮助您获取root权限
+#    如果无法自动获取权限，您可以手动执行:
+#    sudo bash /opt/mihomo.sh
+#    或者:
+#    chmod +x /opt/mihomo.sh
+#    sudo ./opt/mihomo.sh
+#    
+# 3. 查看使用帮助:
 #    bash /opt/mihomo.sh -h
 #    或者
 #    bash /opt/mihomo.sh --help
@@ -95,8 +95,42 @@ CONFIG_TEMPLATE="$FILES_DIR/config.yaml"
 # 检查是否具有root权限
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        echo -e "${RED}错误: 必须以root用户运行此脚本${PLAIN}"
-        exit 1
+        echo -e "${YELLOW}警告: 当前非root用户，需要root权限才能继续安装${PLAIN}"
+        echo -e "${CYAN}尝试获取root权限...${PLAIN}"
+        
+        # 检查是否有sudo命令
+        if command -v sudo &> /dev/null; then
+            echo -e "${CYAN}已检测到sudo命令，尝试使用sudo执行脚本...${PLAIN}"
+            
+            # 询问用户是否自动提权
+            read -p "是否自动使用sudo重新执行此脚本? (y/n): " auto_sudo
+            if [[ "$auto_sudo" == "y" || "$auto_sudo" == "Y" ]]; then
+                echo -e "${GREEN}正在使用sudo重新执行脚本...${PLAIN}"
+                
+                # 获取当前脚本的绝对路径
+                SCRIPT_PATH=$(readlink -f "$0")
+                
+                # 如果脚本没有执行权限，自动添加
+                if [[ ! -x "$SCRIPT_PATH" ]]; then
+                    echo -e "${CYAN}脚本没有执行权限，正在添加...${PLAIN}"
+                    sudo chmod +x "$SCRIPT_PATH"
+                fi
+                
+                # 使用sudo重新执行脚本，保持原始参数
+                exec sudo bash "$SCRIPT_PATH" "$@"
+            else
+                echo -e "${YELLOW}请以root权限运行此脚本:${PLAIN}"
+                echo -e "${CYAN}方法1: ${GREEN}sudo bash $0${PLAIN}"
+                echo -e "${CYAN}方法2: ${GREEN}sudo su${PLAIN} 然后 ${GREEN}bash $0${PLAIN}"
+                exit 1
+            fi
+        else
+            echo -e "${YELLOW}系统中没有发现sudo命令，请尝试以下方法获取root权限:${PLAIN}"
+            echo -e "${CYAN}方法1: ${GREEN}su -${PLAIN} 输入root密码后执行 ${GREEN}bash $0${PLAIN}"
+            echo -e "${CYAN}方法2: 重新登录为root用户后执行脚本${PLAIN}"
+            echo -e "${CYAN}方法3: ${GREEN}chmod +x $0${PLAIN} 然后以root用户执行 ${GREEN}./$0${PLAIN}"
+            exit 1
+        fi
     fi
 }
 
@@ -404,8 +438,42 @@ CONFIG_TEMPLATE="$CONFIG_TEMPLATE"
 
 # 检查是否具有root权限
 if [[ \$EUID -ne 0 ]]; then
-    echo -e "\${RED}错误: 必须以root用户运行此脚本\${PLAIN}"
-    exit 1
+    echo -e "\${YELLOW}警告: 当前非root用户，需要root权限才能继续安装\${PLAIN}"
+    echo -e "\${CYAN}尝试获取root权限...\${PLAIN}"
+    
+    # 检查是否有sudo命令
+    if command -v sudo &> /dev/null; then
+        echo -e "\${CYAN}已检测到sudo命令，尝试使用sudo执行脚本...\${PLAIN}"
+        
+        # 询问用户是否自动提权
+        read -p "是否自动使用sudo重新执行此脚本? (y/n): " auto_sudo
+        if [[ "\$auto_sudo" == "y" || "\$auto_sudo" == "Y" ]]; then
+            echo -e "\${GREEN}正在使用sudo重新执行脚本...\${PLAIN}"
+            
+            # 获取当前脚本的绝对路径
+            SCRIPT_PATH=\$(readlink -f "\$0")
+            
+            # 如果脚本没有执行权限，自动添加
+            if [[ ! -x "\$SCRIPT_PATH" ]]; then
+                echo -e "\${CYAN}脚本没有执行权限，正在添加...\${PLAIN}"
+                sudo chmod +x "\$SCRIPT_PATH"
+            fi
+            
+            # 使用sudo重新执行脚本，保持原始参数
+            exec sudo bash "\$SCRIPT_PATH" "\$@"
+        else
+            echo -e "\${YELLOW}请以root权限运行此脚本:\${PLAIN}"
+            echo -e "\${CYAN}方法1: \${GREEN}sudo bash \$0\${PLAIN}"
+            echo -e "\${CYAN}方法2: \${GREEN}sudo su\${PLAIN} 然后 \${GREEN}bash \$0\${PLAIN}"
+            exit 1
+        fi
+    else
+        echo -e "\${YELLOW}系统中没有发现sudo命令，请尝试以下方法获取root权限:\${PLAIN}"
+        echo -e "\${CYAN}方法1: \${GREEN}su -\${PLAIN} 输入root密码后执行 \${GREEN}bash \$0\${PLAIN}"
+        echo -e "\${CYAN}方法2: 重新登录为root用户后执行脚本\${PLAIN}"
+        echo -e "\${CYAN}方法3: \${GREEN}chmod +x \$0\${PLAIN} 然后以root用户执行 \${GREEN}./\$0\${PLAIN}"
+        exit 1
+    fi
 fi
 
 # 更新状态函数
@@ -925,6 +993,18 @@ main() {
     echo -e "${CYAN}  Mihomo 一键安装引导脚本 V1.0${PLAIN}"
     echo -e "${CYAN}  系统要求: Debian/Ubuntu${PLAIN}"
     echo -e "${CYAN}===========================================================${PLAIN}"
+    
+    # 检查脚本是否有执行权限
+    SCRIPT_PATH=$(readlink -f "$0")
+    if [[ ! -x "$SCRIPT_PATH" ]]; then
+        echo -e "${YELLOW}检测到脚本没有执行权限，尝试添加执行权限...${PLAIN}"
+        chmod +x "$SCRIPT_PATH"
+        if [[ $? -eq 0 ]]; then
+            echo -e "${GREEN}已成功添加执行权限${PLAIN}"
+        else
+            echo -e "${YELLOW}无法自动添加执行权限，建议手动执行: ${GREEN}chmod +x $SCRIPT_PATH${PLAIN}"
+        fi
+    fi
     
     # 检查root权限
     check_root
