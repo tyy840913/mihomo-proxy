@@ -333,7 +333,7 @@ setup_mihomo_ip() {
 
 # 创建默认配置文件模板
 create_config_template() {
-    if [[ ! -f "$CONFIG_TEMPLATE" ]]; then
+    if ([[ ! -f "$CONFIG_TEMPLATE" ]]); then
         echo -e "${CYAN}创建默认配置文件模板...${PLAIN}"
         cat > "$CONFIG_TEMPLATE" << EOF
 # ===== Mihomo 配置文件模板 =====
@@ -401,7 +401,7 @@ EOF
 
 # 检查配置文件模板是否存在
 check_config_template() {
-    if [[ ! -f "$CONFIG_TEMPLATE" ]]; then
+    if ([[ ! -f "$CONFIG_TEMPLATE" ]]); then
         create_config_template
     fi
 }
@@ -571,9 +571,9 @@ if [[ "\$config_choice" == "1" ]]; then
     # 提取并合并配置
     
     # 获取模板中的proxies部分之前的内容
-    sed -n '1,/^proxies:/p' "\$CONFIG_TEMPLATE" > \$CONF_DIR/config.yaml
+    sed -n '1,/^proxies:/p' "\$CONFIG_TEMPLATE" | sed '/^proxies:/d' > \$CONF_DIR/config.yaml
     
-    # 获取订阅中的proxies及之后的内容
+    # 获取订阅中的proxies及之后的内容 
     sed -n '/^proxies:/,$p' /tmp/subscription.yaml >> \$CONF_DIR/config.yaml
     
     # 替换配置文件中的VPS_IP
@@ -837,7 +837,7 @@ generate_router_script() {
 #!/bin/bash
 #############################################################
 # RouterOS 配置脚本 (由引导脚本自动生成)
-# 此脚本将生成RouterOS配置命令
+# 此脚本将生成RouterOS配置命令及详细配置指南
 #############################################################
 
 # 设置颜色
@@ -870,38 +870,193 @@ EOL
 
 echo -e "\${GREEN}RouterOS配置命令已生成: \$ROUTER_CONFIG_FILE\${PLAIN}"
 echo
-echo -e "\${CYAN}=== 使用说明 ===\${PLAIN}"
-echo -e "\${CYAN}1. 通过WebFig界面操作:\${PLAIN}"
-echo -e "\${CYAN}   - 登录RouterOS的WebFig界面\${PLAIN}"
-echo -e "\${CYAN}   - 打开"Terminal"选项\${PLAIN}"
-echo -e "\${CYAN}   - 复制并粘贴以下命令\${PLAIN}"
-echo -e "\${CYAN}   - 按Enter执行\${PLAIN}"
+echo -e "\${GREEN}=================================================\${PLAIN}"
+echo -e "\${GREEN}           RouterOS 配置详细指南\${PLAIN}"
+echo -e "\${GREEN}=================================================\${PLAIN}"
 echo
-echo -e "\${CYAN}2. 通过WinBox操作:\${PLAIN}"
-echo -e "\${CYAN}   - 打开WinBox连接到RouterOS\${PLAIN}"
-echo -e "\${CYAN}   - 点击"New Terminal"按钮\${PLAIN}"
-echo -e "\${CYAN}   - 复制并粘贴以下命令\${PLAIN}"
-echo -e "\${CYAN}   - 按Enter执行\${PLAIN}"
-echo
-echo -e "\${CYAN}3. 通过SSH终端操作:\${PLAIN}"
-echo -e "\${CYAN}   - 使用SSH连接到RouterOS\${PLAIN}"
-echo -e "\${CYAN}   - 复制并粘贴以下命令\${PLAIN}"
-echo -e "\${CYAN}   - 按Enter执行\${PLAIN}"
-echo
-echo -e "\${YELLOW}=== RouterOS配置命令 ===\${PLAIN}"
+
+# 创建详细的RouterOS配置指南
+cat > "\$FILES_DIR/routeros_guide.txt" << EOL
+===================================
+      RouterOS 配置详细指南
+===================================
+
+----- 配置前准备 -----
+
+1. 确认Mihomo代理机已正确安装并运行
+2. 确认Mihomo的IP地址为: $MIHOMO_IP
+3. 确保您可以访问RouterOS的管理界面
+
+----- 配置方法 -----
+
+【方法一】通过WebFig界面配置（图形化配置）
+
+1. DNS服务器配置:
+   a. 登录RouterOS的WebFig界面 (通常是 http://路由器IP/webfig)
+   b. 在左侧菜单中找到并点击"IP" → "DNS"
+   c. 在"Servers"字段中，删除现有服务器，输入: $MIHOMO_IP
+   d. 点击"Apply"保存设置
+
+2. Fake-IP路由配置:
+   a. 在左侧菜单中找到并点击"IP" → "Routes"
+   b. 点击"+"按钮添加新路由
+   c. 填写以下信息:
+      • Dst. Address: 198.18.0.0/16
+      • Gateway: $MIHOMO_IP
+      • Comment: mihomo fake-ip route
+   d. 点击"Apply"保存设置
+
+【方法二】通过WinBox工具配置
+
+1. 连接到您的RouterOS:
+   a. 打开WinBox软件
+   b. 输入路由器IP地址和登录凭据
+   c. 点击"Connect"连接到路由器
+
+2. DNS服务器配置:
+   a. 在左侧菜单中找到并点击"IP" → "DNS"
+   b. 在"Servers"字段中，删除现有服务器，输入: $MIHOMO_IP
+   c. 点击"OK"保存设置
+
+3. Fake-IP路由配置:
+   a. 在左侧菜单中找到并点击"IP" → "Routes"
+   b. 点击"+"按钮添加新路由
+   c. 填写以下信息:
+      • Dst. Address: 198.18.0.0/16
+      • Gateway: $MIHOMO_IP
+      • Comment: mihomo fake-ip route
+   d. 点击"OK"保存设置
+
+【方法三】通过Terminal命令配置（最简单）
+
+1. 在RouterOS中打开Terminal:
+   a. 在WebFig界面，点击顶部菜单中的"Terminal"图标
+   b. 在WinBox中，点击左侧栏的"New Terminal"按钮
+
+2. 复制并粘贴以下全部命令:
+
+/ip dns set servers=$MIHOMO_IP
+/ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment="mihomo fake-ip route"
+
+3. 按Enter键执行命令
+
+----- 验证配置 -----
+
+执行以下命令检查配置是否生效:
+
+1. 检查DNS设置:
+   /ip dns print
+
+   应显示: servers: $MIHOMO_IP
+
+2. 检查路由设置:
+   /ip route print where comment="mihomo fake-ip route"
+
+   应显示一条目标地址为198.18.0.0/16，网关为$MIHOMO_IP的路由
+
+----- 进阶配置（可选） -----
+
+如果您想配置DNS解析的默认规则：
+
+1. 设置DNS静态记录:
+   /ip dns static add name=example.com address=198.18.0.1 comment="mihomo解析"
+
+2. 设置DNS缓存大小:
+   /ip dns set cache-size=2048KiB
+
+3. 启用DNS缓存:
+   /ip dns set allow-remote-requests=yes
+
+----- 故障排查 -----
+
+1. DNS不工作:
+   • 检查Mihomo代理机是否运行正常
+   • 检查路由器与Mihomo间的网络连接: ping $MIHOMO_IP
+   • 尝试重启DNS服务: /ip dns cache flush
+
+2. 网站无法访问:
+   • 检查fake-ip路由是否正确添加
+   • 检查Mihomo代理配置是否正确
+
+3. 性能问题:
+   • 调整DNS缓存大小
+   • 检查Mihomo代理机器的负载情况
+
+----- 备注 -----
+
+• 配置完成后无需重启路由器，更改会立即生效
+• 如遇问题，可以随时恢复为默认DNS设置:
+  /ip dns set servers=8.8.8.8,8.8.4.4
+
+===================================
+EOL
+
+echo -e "\${YELLOW}===== RouterOS 配置命令 =====\${PLAIN}"
 cat "\$ROUTER_CONFIG_FILE" | grep -v "^#"
 echo
-echo -e "\${CYAN}=== 非RouterOS路由器配置 ===\${PLAIN}"
-echo -e "\${CYAN}如果您使用其他路由器系统:\${PLAIN}"
+
+# 打印RouterOS配置指南的摘要
+echo -e "\${CYAN}===== RouterOS 配置指南摘要 =====\${PLAIN}"
+echo
+echo -e "\${CYAN}【方法一】通过WebFig界面配置（图形化配置）\${PLAIN}"
+echo -e "\${CYAN}1. DNS服务器配置:\${PLAIN}"
+echo -e "   在WebFig中: IP → DNS → 修改Servers字段为 \${YELLOW}$MIHOMO_IP\${PLAIN}"
+echo
+echo -e "\${CYAN}2. Fake-IP路由配置:\${PLAIN}"
+echo -e "   在WebFig中: IP → Routes → 添加新路由\${PLAIN}"
+echo -e "   Dst. Address: \${YELLOW}198.18.0.0/16\${PLAIN}"
+echo -e "   Gateway: \${YELLOW}$MIHOMO_IP\${PLAIN}"
+echo 
+echo -e "\${CYAN}【方法二】通过WinBox工具配置\${PLAIN}"
+echo -e "\${CYAN}在WinBox中访问相同的配置界面，操作流程类似\${PLAIN}"
+echo
+echo -e "\${CYAN}【方法三】通过Terminal命令配置（最简单）\${PLAIN}"
+echo -e "\${CYAN}1. 在WebFig或WinBox中打开Terminal\${PLAIN}"
+echo -e "\${CYAN}2. 复制以下命令并粘贴执行:\${PLAIN}"
+echo -e "\${YELLOW}/ip dns set servers=$MIHOMO_IP\${PLAIN}"
+echo -e "\${YELLOW}/ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment=\"mihomo fake-ip route\"\${PLAIN}"
+echo
+echo -e "\${CYAN}详细配置指南已保存到: \$FILES_DIR/routeros_guide.txt\${PLAIN}"
+echo
+
+echo -e "\${CYAN}===== 非RouterOS路由器配置 =====\${PLAIN}"
 echo
 echo -e "\${CYAN}1. OpenWrt路由器:\${PLAIN}"
-echo -e "\${CYAN}   - 通过LuCI界面设置DNS服务器指向 \$MIHOMO_IP\${PLAIN}"
-echo -e "\${CYAN}   - 添加静态路由，将198.18.0.0/16网段指向 \$MIHOMO_IP\${PLAIN}"
+echo -e "   a) DNS配置:\${PLAIN}"
+echo -e "      - 登录LuCI界面，进入 网络 → DHCP/DNS → DNS转发\${PLAIN}"
+echo -e "      - 添加 \${YELLOW}$MIHOMO_IP\${PLAIN} 作为自定义DNS服务器\${PLAIN}"
+echo -e "   b) 路由配置:\${PLAIN}"
+echo -e "      - 进入 网络 → 路由 → 静态路由\${PLAIN}"
+echo -e "      - 添加目标 \${YELLOW}198.18.0.0/16\${PLAIN}，网关 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
 echo
-echo -e "\${CYAN}2. 普通家用路由器:\${PLAIN}"
-echo -e "\${CYAN}   - 通过DHCP设置自定义DNS服务器为 \$MIHOMO_IP\${PLAIN}"
-echo -e "\${CYAN}   - 如果支持静态路由，添加198.18.0.0/16网段路由指向 \$MIHOMO_IP\${PLAIN}"
-echo -e "\${CYAN}   - 如不支持，建议用户直接在电脑上手动设置代理\${PLAIN}"
+echo -e "\${CYAN}2. 爱快(iKuai)路由器:\${PLAIN}"
+echo -e "   a) DNS配置:\${PLAIN}"
+echo -e "      - 进入 基本设置 → DNS设置\${PLAIN}"
+echo -e "      - 填写首选DNS为 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
+echo -e "   b) 路由配置:\${PLAIN}" 
+echo -e "      - 进入 路由设置 → 静态路由\${PLAIN}"
+echo -e "      - 添加目标网段 \${YELLOW}198.18.0.0/16\${PLAIN}，下一跳 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
+echo
+echo -e "\${CYAN}3. 普通家用路由器:\${PLAIN}"
+echo -e "   a) DNS配置:\${PLAIN}"
+echo -e "      - 进入路由器设置，找到DHCP或DNS设置\${PLAIN}"
+echo -e "      - 设置主DNS服务器为 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
+echo -e "   b) 如支持静态路由:\${PLAIN}"
+echo -e "      - 在高级设置中找到静态路由选项\${PLAIN}"
+echo -e "      - 添加目标IP \${YELLOW}198.18.0.0\${PLAIN}，子网掩码 \${YELLOW}255.255.0.0\${PLAIN}，网关 \${YELLOW}$MIHOMO_IP\${PLAIN}\${PLAIN}"
+echo -e "   c) 如不支持静态路由:\${PLAIN}"
+echo -e "      - 仅设置DNS即可，或在设备上手动配置代理\${PLAIN}"
+echo
+
+echo -e "\${CYAN}===== 验证配置 =====\${PLAIN}"
+echo
+echo -e "配置完成后，请验证:\${PLAIN}"
+echo -e "1. 使用任意设备尝试访问 \${YELLOW}google.com\${PLAIN} 等网站\${PLAIN}"
+echo -e "2. 检查是否能正常解析域名: \${YELLOW}nslookup google.com\${PLAIN}"
+echo -e "3. 访问Mihomo控制面板: \${YELLOW}http://$MIHOMO_IP:9090/ui\${PLAIN} 查看连接状态\${PLAIN}"
+echo
+
+echo -e "\${GREEN}RouterOS配置脚本执行完成\${PLAIN}"
 echo
 
 exit 0
@@ -909,6 +1064,83 @@ EOF
     
     chmod +x "$ROUTER_SCRIPT"
     echo -e "${GREEN}RouterOS配置脚本生成完成: $ROUTER_SCRIPT${PLAIN}"
+}
+
+# 重新生成配置文件
+regenerate_config() {
+    echo -e "${CYAN}重新生成配置文件...${PLAIN}"
+    
+    # 检查mihomo是否已安装
+    if [[ ! -d "$CONF_DIR" ]]; then
+        echo -e "${YELLOW}Mihomo配置目录不存在，将创建目录${PLAIN}"
+        mkdir -p "$CONF_DIR"
+    fi
+    
+    # 备份原配置文件（如果存在）
+    if [[ -f "$CONF_DIR/config.yaml" ]]; then
+        local backup_file="$CONF_DIR/config.yaml.backup.$(date '+%Y%m%d%H%M%S')"
+        echo -e "${YELLOW}备份原配置文件到: $backup_file${PLAIN}"
+        cp "$CONF_DIR/config.yaml" "$backup_file"
+    fi
+    
+    # 获取mihomo IP
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    if [[ -z "$mihomo_ip" ]]; then
+        echo -e "${RED}错误: 未找到mihomo IP地址配置，请先设置IP地址${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        return
+    fi
+    
+    # 获取配置类型
+    local config_type=$(get_state_value "config_type")
+    local sub_url=$(get_state_value "subscription_url")
+    
+    # 根据配置类型生成新配置
+    if [[ "$config_type" == "subscription" && -n "$sub_url" ]]; then
+        echo -e "${CYAN}使用订阅链接重新生成配置文件${PLAIN}"
+        echo -e "${CYAN}订阅链接: $sub_url${PLAIN}"
+        
+        # 获取订阅内容
+        if ! curl -s -o /tmp/subscription.yaml "$sub_url"; then
+            echo -e "${RED}无法获取订阅内容，请检查链接是否正确或网络连接${PLAIN}"
+            read -p "按任意键返回主菜单..." key
+            return
+        fi
+        
+        # 检查是否为有效的clash/mihomo配置
+        if ! grep -q "^proxies:" /tmp/subscription.yaml; then
+            echo -e "${RED}订阅内容不是有效的clash/mihomo配置文件${PLAIN}"
+            read -p "按任意键返回主菜单..." key
+            return
+        fi
+        
+        echo -e "${GREEN}成功获取订阅配置${PLAIN}"
+        
+        # 提取并合并配置
+        # 获取模板中的proxies部分之前的内容
+        sed -n '1,/^proxies:/p' "$CONFIG_TEMPLATE" | sed '/^proxies:/d' > "$CONF_DIR/config.yaml"
+        
+        # 获取订阅中的proxies及之后的内容 
+        sed -n '/^proxies:/,$p' /tmp/subscription.yaml >> "$CONF_DIR/config.yaml"
+    else
+        echo -e "${CYAN}使用默认模板重新生成配置文件${PLAIN}"
+        # 复制配置模板
+        cp "$CONFIG_TEMPLATE" "$CONF_DIR/config.yaml"
+    fi
+    
+    # 替换配置文件中的VPS_IP
+    sed -i "s/VPS_IP/$mihomo_ip/g" "$CONF_DIR/config.yaml"
+    
+    echo -e "${GREEN}配置文件重新生成完成: $CONF_DIR/config.yaml${PLAIN}"
+    
+    # 如果mihomo容器正在运行，重启它以应用新配置
+    if docker ps | grep -q mihomo; then
+        echo -e "${YELLOW}检测到mihomo容器正在运行，将重启以应用新配置...${PLAIN}"
+        docker restart mihomo
+        echo -e "${GREEN}mihomo容器已重启，新配置已应用${PLAIN}"
+    fi
+    
+    read -p "按任意键返回主菜单..." key
 }
 
 # 显示主菜单
@@ -920,6 +1152,7 @@ show_menu() {
     echo -e "${CYAN}  2. 配置RouterOS${PLAIN}"
     echo -e "${CYAN}  3. 检查安装状态${PLAIN}"
     echo -e "${CYAN}  4. 重新设置mihomo IP地址${PLAIN}"
+    echo -e "${CYAN}  5. 重新生成配置文件${PLAIN}"
     echo -e "${CYAN}  0. 退出${PLAIN}"
     echo -e "${CYAN}===========================================================${PLAIN}"
     
@@ -936,7 +1169,7 @@ show_menu() {
         echo
     fi
     
-    read -p "请选择 [0-4]: " choice
+    read -p "请选择 [0-5]: " choice
     
     case $choice in
         1)
@@ -960,7 +1193,7 @@ show_menu() {
             show_menu
             ;;
         3)
-            if [[ -f "$STATE_FILE" ]]; then
+            if ([[ -f "$STATE_FILE" ]]); then
                 echo -e "${CYAN}当前安装状态:${PLAIN}"
                 cat "$STATE_FILE" | jq .
             else
@@ -973,6 +1206,10 @@ show_menu() {
             setup_mihomo_ip
             generate_proxy_script
             generate_router_script
+            show_menu
+            ;;
+        5)
+            regenerate_config
             show_menu
             ;;
         0)
