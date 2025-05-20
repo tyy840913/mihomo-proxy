@@ -79,13 +79,14 @@ CYAN='\033[0;36m'
 GRAY='\033[0;90m'
 PLAIN='\033[0m'
 
-# 主目录设置
-SCRIPT_DIR="/root/mihomo-proxy/docker版mihomo"
+# 主目录设置 - 自动检测脚本所在目录
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 FILES_DIR="$SCRIPT_DIR/files"
 CONF_DIR="/etc/mihomo"
 
-# 创建文件存放目录
+# 创建文件存放目录 - 确保目录存在
 mkdir -p "$FILES_DIR"
+echo -e "${GREEN}创建files目录: $FILES_DIR${PLAIN}"
 
 # 文件路径设置
 STATE_FILE="$FILES_DIR/mihomo_state.json"
@@ -380,17 +381,27 @@ create_config_template() {
         # 获取脚本所在目录
         SCRIPT_DIR_PATH=$(dirname "$(readlink -f "$0")")
         
-        # 使用用户原有的配置文件作为模板 - 优先使用同目录下的config.yaml
+        # 使用用户原有的配置文件作为模板 - 按优先级搜索多个可能的位置
         if [[ -f "$SCRIPT_DIR_PATH/config.yaml" ]]; then
+            # 1. 首先检查脚本目录中是否有config.yaml文件
             echo -e "${GREEN}使用脚本目录中的配置文件作为模板${PLAIN}"
             cp "$SCRIPT_DIR_PATH/config.yaml" "$CONFIG_TEMPLATE"
-        elif [[ -f "/root/mihomo-proxy/docker版mihomo/config.yaml" ]]; then
-            echo -e "${GREEN}使用备用路径中的配置文件作为模板${PLAIN}"
-            cp "/root/mihomo-proxy/docker版mihomo/config.yaml" "$CONFIG_TEMPLATE"
+        elif [[ -f "$SCRIPT_DIR_PATH/files/config.yaml" ]]; then
+            # 2. 检查脚本目录下的files目录
+            echo -e "${GREEN}使用脚本files目录中的配置文件作为模板${PLAIN}"
+            cp "$SCRIPT_DIR_PATH/files/config.yaml" "$CONFIG_TEMPLATE"
+        elif [[ -f "$SCRIPT_DIR/config.yaml" ]]; then 
+            # 3. 检查SCRIPT_DIR变量指定的目录
+            echo -e "${GREEN}使用SCRIPT_DIR目录中的配置文件作为模板${PLAIN}"
+            cp "$SCRIPT_DIR/config.yaml" "$CONFIG_TEMPLATE"
+        elif [[ -f "$HOME/mihomo-proxy/config.yaml" ]]; then
+            # 4. 检查用户主目录下的mihomo-proxy目录
+            echo -e "${GREEN}使用主目录下的mihomo-proxy配置文件作为模板${PLAIN}"
+            cp "$HOME/mihomo-proxy/config.yaml" "$CONFIG_TEMPLATE"
         else
             # 如果没有找到现有配置文件，创建基本模板
             echo -e "${YELLOW}未找到配置模板文件，创建默认配置...${PLAIN}"
-            cat > "$CONFIG_TEMPLATE" << EOF
+            cat > "$CONFIG_TEMPLATE" << 'EOFCONF'
 #---------------------------------------------------#
 ## 预设配置文件 - 无需选择机场或自定义
 ## 
@@ -428,8 +439,8 @@ socks-port: 7892
 # 允许局域网的连接（开启后，其他设备可以通过你的电脑上网）
 allow-lan: true
 
-# 绑定IP地址 (会被脚本自动替换为您选择的mihomo IP)
-bind-address: VPS_IP
+# 监听地址，"*"表示监听所有地址，这样局域网内其他设备才能连接
+bind-address: "*"
 
 # 代理规则模式: rule(规则), global(全局), direct(直连)
 mode: rule                  
@@ -503,7 +514,7 @@ rules:
   - DOMAIN-SUFFIX,github.com,PROXY
   - GEOIP,CN,DIRECT
   - MATCH,PROXY
-EOF
+EOFCONF
         fi
         echo -e "${GREEN}配置文件模板已创建: $CONFIG_TEMPLATE${PLAIN}"
     fi
@@ -519,6 +530,12 @@ check_config_template() {
 # 生成代理机配置脚本
 generate_proxy_script() {
     echo -e "${CYAN}正在生成代理机配置脚本...${PLAIN}"
+    
+    # 确保目录存在
+    if [[ ! -d "$FILES_DIR" ]]; then
+        echo -e "${YELLOW}目录不存在，创建目录: $FILES_DIR${PLAIN}"
+        mkdir -p "$FILES_DIR"
+    fi
     
     MIHOMO_IP=$(get_state_value "mihomo_ip")
     INTERFACE_IP=$(get_state_value "interface_ip")
@@ -543,8 +560,8 @@ INTERFACE_IP="$INTERFACE_IP"
 MAIN_INTERFACE="$MAIN_INTERFACE"
 MACVLAN_INTERFACE="mihomo_veth"
 CONF_DIR="/etc/mihomo"
-STATE_FILE="$STATE_FILE"
-CONFIG_TEMPLATE="$CONFIG_TEMPLATE"
+STATE_FILE="$(dirname $(dirname $0))/files/mihomo_state.json"
+CONFIG_TEMPLATE="$(dirname $(dirname $0))/files/config.yaml"
 
 # 检查是否具有root权限
 if [[ \$EUID -ne 0 ]]; then
@@ -663,15 +680,29 @@ if [[ -f "\$CONF_DIR/config.yaml" ]]; then
     echo -e "\${GREEN}自动使用现有配置文件\${PLAIN}"
     EXISTING_CONFIG=1
     
-    # 检查是否需要更新IP地址
+    # 检查external-controller部分是否需要更新IP地址
+    if grep -q "external-controller:" "\$CONF_DIR/config.yaml"; then
+        CURRENT_CONTROLLER_IP=\$(grep "external-controller:" "\$CONF_DIR/config.yaml" | awk -F':' '{print \$2}' | awk -F':' '{print \$1}' | tr -d ' ')
+        if [[ "\$CURRENT_CONTROLLER_IP" != "\$MIHOMO_IP" && "\$CURRENT_CONTROLLER_IP" != "0.0.0.0" ]]; then
+            echo -e "\${YELLOW}配置文件中控制台IP地址(\$CURRENT_CONTROLLER_IP)与当前设置(\$MIHOMO_IP)不一致\${PLAIN}"
+            echo -e "\${CYAN}正在更新控制台IP地址...\${PLAIN}"
+            sed -i "s/external-controller: \$CURRENT_CONTROLLER_IP/external-controller: \$MIHOMO_IP/g" "\$CONF_DIR/config.yaml"
+            echo -e "\${GREEN}控制台IP地址已更新\${PLAIN}"
+        fi
+    fi
+    
+    # 检查bind-address是否为"*"，如果不是则提示保持"*"更好
     if grep -q "bind-address:" "\$CONF_DIR/config.yaml"; then
-        CURRENT_IP=\$(grep "bind-address:" "\$CONF_DIR/config.yaml" | awk '{print \$2}')
-        if [[ "\$CURRENT_IP" != "\$MIHOMO_IP" ]]; then
-            echo -e "\${YELLOW}配置文件中IP地址(\$CURRENT_IP)与当前设置(\$MIHOMO_IP)不一致\${PLAIN}"
-            echo -e "\${CYAN}正在更新配置文件中的IP地址...\${PLAIN}"
-            sed -i "s/bind-address: \$CURRENT_IP/bind-address: \$MIHOMO_IP/g" "\$CONF_DIR/config.yaml"
-            sed -i "s/external-controller: \$CURRENT_IP/external-controller: \$MIHOMO_IP/g" "\$CONF_DIR/config.yaml"
-            echo -e "\${GREEN}配置文件已更新\${PLAIN}"
+        CURRENT_BIND=\$(grep "bind-address:" "\$CONF_DIR/config.yaml" | awk '{print \$2}' | tr -d '"'"'"')
+        if [[ "\$CURRENT_BIND" != "*" ]]; then
+            echo -e "\${YELLOW}注意: 当前bind-address设置为'\$CURRENT_BIND'，建议设置为'*'以监听所有地址\${PLAIN}"
+            read -p "是否将bind-address设置为'*'? (y/n): " change_bind
+            if [[ "\$change_bind" == "y" || "\$change_bind" == "Y" ]]; then
+                sed -i "s/bind-address: \$CURRENT_BIND/bind-address: \"*\"/g" "\$CONF_DIR/config.yaml"
+                echo -e "\${GREEN}bind-address已设置为'*'\${PLAIN}"
+            fi
+        else
+            echo -e "\${GREEN}检测到bind-address已设置为'*'，这是推荐的设置\${PLAIN}"
         fi
     fi
 fi
@@ -684,8 +715,8 @@ if [[ \$EXISTING_CONFIG -eq 0 ]]; then
     # 复制配置模板
     cp "\$CONFIG_TEMPLATE" \$CONF_DIR/config.yaml
     
-    # 替换配置文件中的VPS_IP
-    sed -i "s/VPS_IP/\$MIHOMO_IP/g" \$CONF_DIR/config.yaml
+    # 替换配置文件中的VPS_IP（但不替换bind-address的值）
+    sed -i "/bind-address:/! s/VPS_IP/\$MIHOMO_IP/g" \$CONF_DIR/config.yaml
     
     # 配置文件说明
     echo -e "\${YELLOW}已使用预设配置文件。您需要根据自己的代理服务器信息修改配置文件中的关键参数：\${PLAIN}"
@@ -904,18 +935,18 @@ echo -e "\${CYAN}控制面板: http://\$MIHOMO_IP:9090/ui\${PLAIN}"
 echo -e "\${CYAN}控制面板密码: wallentv\${PLAIN}"
 echo
 echo -e "\${CYAN}代理端口:\${PLAIN}"
-echo -e "\${CYAN}  混合端口(HTTP/SOCKS5): \$MIHOMO_IP:7890\${PLAIN}"
+echo -e "\${CYAN}  混合端口\(HTTP/SOCKS5\): \$MIHOMO_IP:7890\${PLAIN}"
 echo -e "\${CYAN}  HTTP端口: \$MIHOMO_IP:7891\${PLAIN}"
 echo -e "\${CYAN}  SOCKS5端口: \$MIHOMO_IP:7892\${PLAIN}"
 echo
-echo -e "\${YELLOW}重要: Mihomo 安装已完成, 您可能需要根据您的实际需求修改配置文件。\\${PLAIN}"
+echo -e "\${YELLOW}重要: Mihomo 安装已完成, 您可能需要根据您的实际需求修改配置文件。\${PLAIN}"
 echo -e "\${YELLOW}配置文件路径: \$CONF_DIR/config.yaml\${PLAIN}"
-echo -e "\${YELLOW}您可以使用 nano \$CONF_DIR/config.yaml 或 vim \$CONF_DIR/config.yaml 来编辑它。\\${PLAIN}"
-echo -e "\${YELLOW}或者，您也可以使用图形化工具（如SFTP客户端配合文本编辑器）下载修改后上传该文件。\\${PLAIN}"
-echo -e "\${YELLOW}修改配置文件后，请记得重启Mihomo容器以使更改生效: docker restart mihomo\\${PLAIN}"
+echo -e "\${YELLOW}您可以使用 nano \$CONF_DIR/config.yaml 或 vim \$CONF_DIR/config.yaml 来编辑它。\${PLAIN}"
+echo -e "\${YELLOW}或者，您也可以使用图形化工具（如SFTP客户端配合文本编辑器）下载修改后上传该文件。\${PLAIN}"
+echo -e "\${YELLOW}修改配置文件后，请记得重启Mihomo容器以使更改生效: docker restart mihomo\${PLAIN}"
 echo
-echo -e "\${CYAN}现在您需要配置路由器指向Mihomo,\\${PLAIN}"
-echo -e "\${CYAN}请运行引导脚本并选择'配置RouterOS'选项\\${PLAIN}"
+echo -e "\${CYAN}现在您需要配置路由器指向Mihomo,\${PLAIN}"
+echo -e "\${CYAN}请运行引导脚本并选择'配置RouterOS'选项\${PLAIN}"
 echo
 
 exit 0
@@ -925,6 +956,12 @@ EOF
 # 生成RouterOS配置脚本
 generate_router_script() {
     echo -e "${CYAN}正在生成RouterOS配置脚本...${PLAIN}"
+    
+    # 确保目录存在
+    if [[ ! -d "$FILES_DIR" ]]; then
+        echo -e "${YELLOW}目录不存在，创建目录: $FILES_DIR${PLAIN}"
+        mkdir -p "$FILES_DIR"
+    fi
     
     MIHOMO_IP=$(get_state_value "mihomo_ip")
     
@@ -946,7 +983,7 @@ PLAIN='\033[0m'
 MIHOMO_IP="$MIHOMO_IP"
 
 # RouterOS配置文件名
-ROUTER_CONFIG_FILE="$FILES_DIR/routeros_commands.rsc"
+ROUTER_CONFIG_FILE="$(dirname $(dirname $0))/files/routeros_commands.rsc"
 
 echo -e "\${CYAN}生成RouterOS配置命令...\${PLAIN}"
 
@@ -971,7 +1008,7 @@ echo -e "\${GREEN}=================================================\${PLAIN}"
 echo
 
 # 创建简洁的RouterOS配置指南
-cat > "\$FILES_DIR/routeros_guide.txt" << EOL
+cat > "$(dirname $0)/routeros_guide.txt" << EOL
 ===================================
       RouterOS 配置简易指南
 ===================================
@@ -1785,6 +1822,11 @@ main() {
         setup_mihomo_ip
         
         # 生成配置脚本
+        generate_proxy_script
+        generate_router_script
+    else
+        # 确保配置脚本使用最新的相对路径
+        echo -e "${CYAN}重新生成配置脚本以使用相对路径...${PLAIN}"
         generate_proxy_script
         generate_router_script
     fi
