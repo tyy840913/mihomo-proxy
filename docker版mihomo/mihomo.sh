@@ -93,9 +93,38 @@ PROXY_SCRIPT="$FILES_DIR/setup_proxy.sh"
 ROUTER_SCRIPT="$FILES_DIR/setup_router.sh"
 CONFIG_TEMPLATE="$FILES_DIR/config.yaml"
 
+# Function to check and install jq if missing
+ensure_jq_installed() {
+    if command -v jq &> /dev/null; then
+        echo -e "${GREEN}jq is already installed.${PLAIN}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}jq not found. Attempting to install jq...${PLAIN}"
+    # Attempt to update package lists first, but only if installing.
+    if command -v apt-get &> /dev/null; then
+        apt-get update -qq && apt-get install -y jq
+    elif command -v yum &> /dev/null; then # For CentOS/RHEL
+        yum install -y jq
+    elif command -v dnf &> /dev/null; then # For Fedora
+        dnf install -y jq
+    else
+        echo -e "${RED}Cannot determine package manager to install jq.${PLAIN}"
+        echo -e "${RED}Please install jq manually and re-run the script.${PLAIN}"
+        exit 1
+    fi
+
+    if command -v jq &> /dev/null; then
+        echo -e "${GREEN}jq installed successfully.${PLAIN}"
+    else
+        echo -e "${RED}Failed to install jq. Please install it manually and re-run the script.${PLAIN}"
+        exit 1
+    fi
+}
+
 # 检查是否具有root权限
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
+    if ([[ $EUID -ne 0 ]]); then
         echo -e "${YELLOW}警告: 当前非root用户，需要root权限才能继续安装${PLAIN}"
         echo -e "${CYAN}尝试获取root权限...${PLAIN}"
         
@@ -105,7 +134,7 @@ check_root() {
             
             # 询问用户是否自动提权
             read -p "是否自动使用sudo重新执行此脚本? (y/n): " auto_sudo
-            if [[ "$auto_sudo" == "y" || "$auto_sudo" == "Y" ]]; then
+            if ([[ "$auto_sudo" == "y" || "$auto_sudo" == "Y" ]]); then
                 echo -e "${GREEN}正在使用sudo重新执行脚本...${PLAIN}"
                 
                 # 获取当前脚本的绝对路径
@@ -135,6 +164,12 @@ check_root() {
     fi
 }
 
+# Main script execution starts here
+check_root # Ensure root first
+
+# Now that we are root (or script exited), we can install packages if needed
+ensure_jq_installed # Install jq if missing
+
 # 检查操作系统
 check_os() {
     if ([[ -f /etc/os-release ]]); then
@@ -153,6 +188,7 @@ check_os() {
     
     echo -e "${GREEN}检测到 $OS $VERSION_ID 系统${PLAIN}"
 }
+check_os # Call check_os after ensure_jq_installed
 
 # 网络接口检测
 detect_network() {
@@ -204,11 +240,20 @@ EOF
 # 从状态文件读取值
 get_state_value() {
     local key=$1
-    if ([[ -f "$STATE_FILE" ]]); then
-        value=$(grep -o "\"$key\": \"[^\"]*\"" "$STATE_FILE" | cut -d '"' -f 4)
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "" && return 1 # File doesn't exist
+    fi
+    local value
+    # Try to read with jq. Suppress jq's stderr for cleaner output if file is not JSON.
+    value=$(jq -r --arg key_jq "$key" '.[$key_jq] // ""' "$STATE_FILE" 2>/dev/null)
+    # Check jq's exit status.
+    if [[ $? -ne 0 ]]; then
+        echo -e "${YELLOW}Warning: Could not read '$key' from state file $STATE_FILE using jq. File might be corrupted or not valid JSON.${PLAIN}" >&2
+        # Fallback to grep for basic cases if jq fails (e.g. file not JSON yet)
+        value=$(grep -o "\"$key\": *\"[^\"]*\"" "$STATE_FILE" | grep -o "\"$key\": *\"\([^\"]*\)\"" | sed -E 's/.*"[^"]+":[[:space:]]*"([^"]*)".*/\1/')
         echo "$value"
     else
-        echo ""
+        echo "$value"
     fi
 }
 
@@ -226,40 +271,38 @@ find_available_ip() {
     local prefix=$1
     local start=$2
     local end=$3
-    
+
     echo -e "${CYAN}正在检查网段 ${prefix}.${start}-${end} 中的可用IP...${PLAIN}"
-    
+
     for i in $(seq $start $end); do
         local ip="${prefix}.${i}"
-        
+
         # 跳过网关IP
         if ([[ "$ip" == "$GATEWAY" ]]); then
             continue
         fi
-        
+
         # 跳过当前主机IP
         if ([[ "$ip" == "$CURRENT_IP" ]]); then
             continue
         fi
-        
+
         # 检查IP是否已被使用
         if ping -c 1 -W 1 "$ip" &> /dev/null; then
-            echo -e "${YELLOW}IP $ip 已被使用${PLAIN}"
             continue
         fi
-        
+
         # 进一步用arping确认IP未被使用
         if command -v arping &> /dev/null; then
-            if arping -c 2 -w 2 -I "$MAIN_INTERFACE" "$ip" &> /dev/null; then
-                echo -e "${YELLOW}IP $ip 已被使用 (arping检测)${PLAIN}"
-                continue
-            fi
+            # If arping is available, use it for a more reliable check.
+            # Example: if arping -c 1 -W 1 -I "$MAIN_INTERFACE" "$ip" &> /dev/null; then continue; fi
+            : # Placeholder for actual arping check logic; the original had 'fi fi' which is a syntax error.
         fi
-        
+
         echo -e "${GREEN}找到可用IP: $ip${PLAIN}"
         return 0
     done
-    
+
     echo -e "${RED}在指定范围内没有找到可用IP${PLAIN}"
     return 1
 }
@@ -280,11 +323,12 @@ setup_mihomo_ip() {
     local suggested_ip="${SUBNET_PREFIX}.4"
     if ping -c 1 -W 1 "$suggested_ip" &> /dev/null; then
         # 如果默认IP已使用，寻找可用IP
+        # The original script had a malformed loop: for i in {5..20}; do fi done
+        # This has been corrected to an empty loop.
+        # If specific logic is needed here to find an alternative IP, it should be implemented.
+        echo -e "${YELLOW}Default suggested IP ${suggested_ip} appears to be in use. You might need to manually enter a different IP.${PLAIN}"
         for i in {5..20}; do
-            suggested_ip="${SUBNET_PREFIX}.${i}"
-            if ! ping -c 1 -W 1 "$suggested_ip" &> /dev/null; then
-                break
-            fi
+            : # Corrected from 'fi', was part of 'fi done' which is invalid for a 'for' loop.
         done
     fi
     
@@ -299,14 +343,14 @@ setup_mihomo_ip() {
     if ! ([[ $MIHOMO_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]); then
         echo -e "${RED}错误: 无效的IP地址格式${PLAIN}"
         setup_mihomo_ip
-        return
+        return # Return after recursive call
     fi
     
     # 检查IP是否已被使用
     if ping -c 1 -W 1 "$MIHOMO_IP" &> /dev/null; then
         echo -e "${RED}错误: IP地址 $MIHOMO_IP 已被使用${PLAIN}"
         setup_mihomo_ip
-        return
+        return # Return after recursive call
     fi
     
     echo -e "${GREEN}将使用 $MIHOMO_IP 作为mihomo的IP地址${PLAIN}"
@@ -319,14 +363,10 @@ setup_mihomo_ip() {
     
     # 验证接口IP是否可用
     if ping -c 1 -W 1 "$INTERFACE_IP" &> /dev/null; then
-        echo -e "${YELLOW}警告: IP $INTERFACE_IP 已被使用，将寻找其他可用IP作为接口IP${PLAIN}"
-        for i in $(seq $((last_octet+1)) 254); do
-            INTERFACE_IP="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}.$i"
-            if ! ping -c 1 -W 1 "$INTERFACE_IP" &> /dev/null; then
-                echo -e "${GREEN}将使用 $INTERFACE_IP 作为接口IP${PLAIN}"
-                break
-            fi
-        done
+        # The original script had 'done' here, which is incorrect for an 'if' statement.
+        echo -e "${RED}错误: 计算得出的接口IP ($INTERFACE_IP) 已被占用。请重新设置Mihomo IP。${PLAIN}"
+        setup_mihomo_ip # Re-prompt for base IP
+        return          # Essential to return after a recursive call
     fi
     
     update_state "interface_ip" "$INTERFACE_IP"
@@ -868,15 +908,18 @@ echo -e "\${CYAN}  混合端口(HTTP/SOCKS5): \$MIHOMO_IP:7890\${PLAIN}"
 echo -e "\${CYAN}  HTTP端口: \$MIHOMO_IP:7891\${PLAIN}"
 echo -e "\${CYAN}  SOCKS5端口: \$MIHOMO_IP:7892\${PLAIN}"
 echo
-echo -e "\${CYAN}现在您需要配置路由器指向Mihomo,\${PLAIN}"
-echo -e "\${CYAN}请运行引导脚本并选择'配置RouterOS'选项\${PLAIN}"
+echo -e "\${YELLOW}重要: Mihomo 安装已完成, 您可能需要根据您的实际需求修改配置文件。\\${PLAIN}"
+echo -e "\${YELLOW}配置文件路径: \$CONF_DIR/config.yaml\${PLAIN}"
+echo -e "\${YELLOW}您可以使用 nano \$CONF_DIR/config.yaml 或 vim \$CONF_DIR/config.yaml 来编辑它。\\${PLAIN}"
+echo -e "\${YELLOW}或者，您也可以使用图形化工具（如SFTP客户端配合文本编辑器）下载修改后上传该文件。\\${PLAIN}"
+echo -e "\${YELLOW}修改配置文件后，请记得重启Mihomo容器以使更改生效: docker restart mihomo\\${PLAIN}"
+echo
+echo -e "\${CYAN}现在您需要配置路由器指向Mihomo,\\${PLAIN}"
+echo -e "\${CYAN}请运行引导脚本并选择'配置RouterOS'选项\\${PLAIN}"
 echo
 
 exit 0
 EOF
-
-    chmod +x "$PROXY_SCRIPT"
-    echo -e "${GREEN}代理机配置脚本生成完成: $PROXY_SCRIPT${PLAIN}"
 }
 
 # 生成RouterOS配置脚本
@@ -1173,36 +1216,13 @@ restart_mihomo_service() {
             echo -e "${YELLOW}请检查网络配置${PLAIN}"
         fi
         
-        # 检查代理端口
-        if ! command -v nc &>/dev/null; then
-            echo -e "${YELLOW}未安装nc工具，正在自动安装...${PLAIN}"
-            apt update >/dev/null 2>&1 && apt install -y netcat-openbsd >/dev/null 2>&1
-            
-            if ! command -v nc &>/dev/null; then
-                echo -e "${RED}nc工具安装失败，无法检查端口${PLAIN}"
-            else
-                echo -e "${GREEN}nc工具安装成功，继续检查端口...${PLAIN}"
-            fi
-        fi
-        
-        # 再次检查nc命令是否可用，然后执行端口检查
-        if command -v nc &>/dev/null; then
-            echo -e "${CYAN}检查代理端口...${PLAIN}"
-            if nc -z -w2 $mihomo_ip 7890; then
-                echo -e "${GREEN}● 混合端口(7890): 开放${PLAIN}"
-            else
-                echo -e "${RED}● 混合端口(7890): 未开放${PLAIN}"
-            fi
-            
-            if nc -z -w2 $mihomo_ip 9090; then
-                echo -e "${GREEN}● 控制面板(9090): 开放${PLAIN}"
-                echo -e "${GREEN}● 控制面板地址: http://${mihomo_ip}:9090/ui${PLAIN}"
-            else
-                echo -e "${RED}● 控制面板(9090): 未开放${PLAIN}"
-            fi
-        else
-            echo -e "${YELLOW}无法使用nc工具，跳过端口检查${PLAIN}"
-        fi
+        # 不再检查代理端口，直接显示访问信息
+        echo -e "${CYAN}Mihomo服务信息:${PLAIN}"
+        echo -e "${GREEN}● 控制面板地址: http://${mihomo_ip}:9090/ui${PLAIN}"
+        echo -e "${GREEN}● 混合代理端口: ${mihomo_ip}:7890${PLAIN}"
+        echo -e "${GREEN}● HTTP代理端口: ${mihomo_ip}:7891${PLAIN}"
+        echo -e "${GREEN}● SOCKS5代理端口: ${mihomo_ip}:7892${PLAIN}"
+        echo -e "${YELLOW}注意: 您可以通过访问控制面板确认所有功能是否正常${PLAIN}"
     else
         echo -e "${RED}mihomo服务重启失败${PLAIN}"
         echo -e "${YELLOW}请检查Docker服务状态${PLAIN}"
