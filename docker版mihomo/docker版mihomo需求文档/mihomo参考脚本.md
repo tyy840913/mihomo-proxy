@@ -64,7 +64,7 @@ docker run -d --privileged \
 ip link add veth5 link enp0s18 type macvlan mode bridge
 
 # 为接口分配IP地址
-ip addr add 192.168.88.7 dev veth5
+ip addr add 192.168.88.5 dev veth5
 
 # 启用接口
 ip link set veth5 up
@@ -75,7 +75,7 @@ ip route add 192.168.88.4 dev veth5
 
 **重要IP地址说明：**
 - 宿主机访问mihomo的IP： 192.168.88.4
-- mihomo访问宿主机的IP： 192.168.88.7
+- mihomo访问宿主机的IP： 192.168.88.5
 
 ## 设置RouterOS里的DNS和路由
 
