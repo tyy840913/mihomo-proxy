@@ -1,7 +1,7 @@
 #!/bin/bash
 #############################################################
 # RouterOS 配置脚本
-# 此脚本将生成RouterOS配置命令及详细配置指南
+# 此脚本将显示RouterOS配置命令及详细配置指南
 #############################################################
 
 # 设置颜色
@@ -11,112 +11,123 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
+# 日志文件路径
+LOG_FILE="/var/log/mihomo-router.log"
+
+# 日志函数
+log_message() {
+    local level=$1
+    local message=$2
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $message" >> "$LOG_FILE"
+}
+
+# 错误处理函数
+handle_error() {
+    local error_msg=$1
+    log_message "错误" "$error_msg"
+    echo -e "${RED}$error_msg${PLAIN}"
+    exit 1
+}
+
 # 配置信息 - 将从状态文件中读取
 SCRIPT_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
 FILES_DIR="$SCRIPT_DIR/files"
 STATE_FILE="$FILES_DIR/mihomo_state.json"
 
-# 从状态文件读取值
+# 获取状态值
 get_state_value() {
     local key=$1
     if [[ ! -f "$STATE_FILE" ]]; then
-        echo "" && return 1 # File doesn't exist
+        handle_error "错误: 状态文件不存在"
     fi
-    local value
-    # Try to read with jq. Suppress jq's stderr for cleaner output if file is not JSON.
-    value=$(jq -r --arg key_jq "$key" '.[$key_jq] // ""' "$STATE_FILE" 2>/dev/null)
-    # Check jq's exit status.
+    
+    local value=$(jq -r ".$key" "$STATE_FILE" 2>/dev/null)
     if [[ $? -ne 0 ]]; then
-        echo -e "${YELLOW}Warning: Could not read '$key' from state file $STATE_FILE using jq. File might be corrupted or not valid JSON.${PLAIN}" >&2
-        # Fallback to grep for basic cases if jq fails (e.g. file not JSON yet)
-        value=$(grep -o "\"$key\": *\"[^\"]*\"" "$STATE_FILE" | grep -o "\"$key\": *\"\([^\"]*\)\"" | sed -E 's/.*"[^"]+":[[:space:]]*"([^"]*)".*/\1/')
-        echo "$value"
-    else
-        echo "$value"
+        handle_error "错误: 无法读取状态文件"
     fi
+    
+    echo "$value"
 }
 
-# Mihomo IP
-MIHOMO_IP=$(get_state_value "mihomo_ip")
+# 验证IP地址
+validate_ip() {
+    local ip=$1
+    if [[ ! $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        return 1
+    fi
+    
+    IFS='.' read -r -a ip_parts <<< "$ip"
+    for part in "${ip_parts[@]}"; do
+        if [[ $part -lt 0 || $part -gt 255 ]]; then
+            return 1
+        fi
+    done
+    
+    return 0
+}
 
-# 检查是否有Mihomo IP
-if [[ -z "$MIHOMO_IP" ]]; then
-    echo -e "${RED}错误: 无法读取Mihomo IP地址，请先运行主脚本设置IP地址${PLAIN}"
-    exit 1
-fi
+# 检查网络连接
+check_network() {
+    local ip=$1
+    if ! ping -c 1 -W 1 "$ip" >/dev/null 2>&1; then
+        echo -e "${YELLOW}警告: 无法ping通Mihomo IP，可能网络不可达${PLAIN}"
+        return 1
+    fi
+    return 0
+}
 
-# RouterOS配置文件名
-ROUTER_CONFIG_FILE="$FILES_DIR/routeros_commands.rsc"
+# 主函数
+main() {
+    # 创建日志文件
+    touch "$LOG_FILE"
+    chmod 644 "$LOG_FILE"
+    log_message "信息" "开始执行路由器配置脚本"
+    
+    # 获取Mihomo IP
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    if [[ -z "$mihomo_ip" ]]; then
+        handle_error "错误: 未获取到Mihomo IP"
+    fi
+    
+    # 验证IP地址
+    if ! validate_ip "$mihomo_ip"; then
+        handle_error "错误: IP地址格式无效"
+    fi
+    
+    # 检查网络连接
+    check_network "$mihomo_ip"
+    
+    # 显示RouterOS配置说明
+    echo -e "\n${CYAN}======================================================${PLAIN}"
+    echo -e "${CYAN}              RouterOS 配置命令及说明${PLAIN}"
+    echo -e "${CYAN}======================================================${PLAIN}"
+    echo -e "${YELLOW}Mihomo代理服务器信息:${PLAIN}"
+    echo -e "${GREEN}● 服务器IP: $mihomo_ip${PLAIN}"
+    echo -e "${GREEN}● 控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
+    echo -e "${GREEN}● 混合代理: $mihomo_ip:7890${PLAIN}"
+    echo -e "${GREEN}● HTTP代理: $mihomo_ip:7891${PLAIN}"
+    echo -e "${GREEN}● SOCKS5代理: $mihomo_ip:7892${PLAIN}"
+    echo -e "${CYAN}------------------------------------------------------${PLAIN}"
+    echo -e "${YELLOW}请将以下命令复制到RouterOS终端执行:${PLAIN}"
+    echo -e "${CYAN}------------------------------------------------------${PLAIN}"
+    
+    # DNS设置
+    echo -e "${GREEN}# 设置DNS服务器为Mihomo${PLAIN}"
+    echo -e "${GREEN}/ip dns set servers=$mihomo_ip${PLAIN}"
+    echo -e "${CYAN}------------------------------------------------------${PLAIN}"
+    
+    # 路由设置
+    echo -e "${GREEN}# 添加198.18.0.1/16网段的路由${PLAIN}"
+    echo -e "${GREEN}/ip route add dst-address=198.18.0.0/16 gateway=$mihomo_ip${PLAIN}"
+    echo -e "${CYAN}------------------------------------------------------${PLAIN}"
+    
+    echo -e "${YELLOW}配置说明:${PLAIN}"
+    echo -e "1. 第一条命令将DNS服务器设置为Mihomo代理"
+    echo -e "2. 第二条命令将198.18.0.1/16网段的流量路由到Mihomo代理"
+    echo -e "${CYAN}======================================================${PLAIN}"
+    
+    log_message "信息" "路由器配置脚本执行完成"
+}
 
-echo -e "${CYAN}生成RouterOS配置命令...${PLAIN}"
-
-# 创建RouterOS配置文件
-cat > "$ROUTER_CONFIG_FILE" << EOL
-# ==== Mihomo RouterOS 配置命令 ====
-# 请将以下命令复制到RouterOS的Terminal中执行
-# 您可以通过WebFig、WinBox或SSH访问RouterOS的Terminal
-
-# 设置DNS服务器指向Mihomo
-/ip dns set servers=$MIHOMO_IP
-
-# 添加fake-ip路由规则
-/ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment="mihomo fake-ip route"
-EOL
-
-echo -e "${GREEN}RouterOS配置命令已生成: $ROUTER_CONFIG_FILE${PLAIN}"
-echo
-echo -e "${GREEN}=================================================${PLAIN}"
-echo -e "${GREEN}           RouterOS 配置详细指南${PLAIN}"
-echo -e "${GREEN}=================================================${PLAIN}"
-echo
-
-# 创建简洁的RouterOS配置指南
-cat > "$FILES_DIR/routeros_guide.txt" << EOL
-===================================
-      RouterOS 配置简易指南
-===================================
-
------ 配置命令 -----
-
-/ip dns set servers=$MIHOMO_IP
-/ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment="mihomo fake-ip route"
-
------ 配置方法 -----
-
-【WebFig/WinBox配置】
-1. DNS配置: IP → DNS → 设置Servers为$MIHOMO_IP
-2. 路由配置: IP → Routes → 添加路由198.18.0.0/16指向$MIHOMO_IP
-
-【Terminal命令配置】
-复制粘贴上方命令到RouterOS Terminal中执行即可
-
------ 验证配置 -----
-
-1. 尝试访问google.com等网站
-2. 运行nslookup google.com检查DNS解析
-3. 访问http://$MIHOMO_IP:9090/ui查看连接状态
-
------ 其他路由器配置 -----
-
-1. OpenWrt: 网络→DHCP/DNS→设置DNS为$MIHOMO_IP，添加静态路由
-2. 爱快: DNS设置为$MIHOMO_IP，添加静态路由
-3. 普通路由器: 设置DNS服务器为$MIHOMO_IP
-===================================
-EOL
-
-# 打印RouterOS配置指南的摘要
-echo -e "${CYAN}===== RouterOS 配置命令与方式 =====${PLAIN}"
-echo
-echo -e "${YELLOW}/ip dns set servers=$MIHOMO_IP${PLAIN}"
-echo -e "${YELLOW}/ip route add dst-address=198.18.0.0/16 gateway=$MIHOMO_IP comment=\"mihomo fake-ip route\"${PLAIN}"
-echo
-echo -e "【方法一】WebFig界面: IP→DNS→设置服务器为${YELLOW}$MIHOMO_IP${PLAIN}，添加路由${YELLOW}198.18.0.0/16${PLAIN}到${YELLOW}$MIHOMO_IP${PLAIN}"
-echo -e "【方法二】WinBox工具: 同上述图形操作"
-echo -e "【方法三】Terminal命令: 复制粘贴上方命令执行"
-echo
-echo -e "${CYAN}===== 其他路由器配置 =====${PLAIN}"
-echo
-echo -e "1. OpenWrt: DNS设置为${YELLOW}$MIHOMO_IP${PLAIN}，添加静态路由${YELLOW}198.18.0.0/16${PLAIN}到${YELLOW}$MIHOMO_IP${PLAIN}"
-echo -e "2. 爱快(iKuai): DNS设置为${YELLOW}$MIHOMO_IP${PLAIN}，添加静态路由${YELLOW}198.18.0.0/16${PLAIN}到${YELLOW}$MIHOMO_IP${PLAIN}"
-echo -e "3. 普通路由器: 设置DNS为${YELLOW}$MIHOMO_IP${PLAIN}，支持静态路由则添加${YELLOW}198.18.0.0/16${PLAIN}到${YELLOW}$MIHOMO_IP${PLAIN}"
-echo
+# 执行主函数
+main

@@ -1,7 +1,7 @@
 #!/bin/bash
 #############################################################
 # Mihomo 代理机配置脚本
-# 此脚本将配置Docker和Mihomo代理环境
+# 此脚本将安装Docker和Mihomo，并配置网络
 #############################################################
 
 # 设置颜色
@@ -11,415 +11,391 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
+# 日志文件路径
+LOG_FILE="/var/log/mihomo-proxy.log"
+
+# 日志函数
+log_message() {
+    local level=$1
+    local message=$2
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $message" >> "$LOG_FILE"
+}
+
+# 错误处理函数
+handle_error() {
+    local error_msg=$1
+    log_message "错误" "$error_msg"
+    echo -e "${RED}$error_msg${PLAIN}"
+    exit 1
+}
+
 # 配置信息 - 将从状态文件中读取
 SCRIPT_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
 FILES_DIR="$SCRIPT_DIR/files"
 STATE_FILE="$FILES_DIR/mihomo_state.json"
-CONFIG_TEMPLATE="$SCRIPT_DIR/config.yaml"  # 修正配置模板路径为正确的位置
 CONF_DIR="/etc/mihomo"
 
-# 从状态文件读取值
+# 获取状态值
 get_state_value() {
     local key=$1
-    if [[ ! -f "$STATE_FILE" ]]; then
-        echo "" && return 1 # File doesn't exist
-    fi
-    local value
-    # Try to read with jq. Suppress jq's stderr for cleaner output if file is not JSON.
-    value=$(jq -r --arg key_jq "$key" '.[$key_jq] // ""' "$STATE_FILE" 2>/dev/null)
-    # Check jq's exit status.
-    if [[ $? -ne 0 ]]; then
-        echo -e "${YELLOW}Warning: Could not read '$key' from state file $STATE_FILE using jq. File might be corrupted or not valid JSON.${PLAIN}" >&2
-        # Fallback to grep for basic cases if jq fails (e.g. file not JSON yet)
-        value=$(grep -o "\"$key\": *\"[^\"]*\"" "$STATE_FILE" | grep -o "\"$key\": *\"\([^\"]*\)\"" | sed -E 's/.*"[^"]+":[[:space:]]*"([^"]*)".*/\1/')
-        echo "$value"
-    else
-        echo "$value"
-    fi
-}
-
-# 更新状态函数
-update_state() {
-    local key="$1"
-    local value="$2"
-    if [[ -f "$STATE_FILE" ]]; then
-        sed -i "s|\"$key\": \"[^\"]*\"|\"$key\": \"$value\"|g" "$STATE_FILE"
-    fi
-}
-
-# 读取必要的配置信息
-MIHOMO_IP=$(get_state_value "mihomo_ip")
-INTERFACE_IP=$(get_state_value "interface_ip")
-MAIN_INTERFACE=$(get_state_value "main_interface")
-MACVLAN_INTERFACE=$(get_state_value "macvlan_interface")
-
-# 检查配置是否存在
-if [[ -z "$MIHOMO_IP" || -z "$MAIN_INTERFACE" ]]; then
-    echo -e "${RED}错误: 无法读取配置信息，请先运行主脚本设置IP地址${PLAIN}"
-    exit 1
-fi
-
-# 检查是否具有root权限
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${YELLOW}警告: 当前非root用户，需要root权限才能继续安装${PLAIN}"
-    echo -e "${CYAN}尝试获取root权限...${PLAIN}"
     
-    # 检查是否有sudo命令
-    if command -v sudo &> /dev/null; then
-        echo -e "${CYAN}已检测到sudo命令，尝试使用sudo执行脚本...${PLAIN}"
-        
-        # 询问用户是否自动提权
-        read -p "是否自动使用sudo重新执行此脚本? (y/n): " auto_sudo
-        if [[ "$auto_sudo" == "y" || "$auto_sudo" == "Y" ]]; then
-            echo -e "${GREEN}正在使用sudo重新执行脚本...${PLAIN}"
-            
-            # 获取当前脚本的绝对路径
-            SCRIPT_PATH=$(readlink -f "$0")
-            
-            # 如果脚本没有执行权限，自动添加
-            if [[ ! -x "$SCRIPT_PATH" ]]; then
-                echo -e "${CYAN}脚本没有执行权限，正在添加...${PLAIN}"
-                sudo chmod +x "$SCRIPT_PATH"
-            fi
-            
-            # 使用sudo重新执行脚本，保持原始参数
-            exec sudo bash "$SCRIPT_PATH" "$@"
-        else
-            echo -e "${YELLOW}请以root权限运行此脚本:${PLAIN}"
-            echo -e "${CYAN}方法1: ${GREEN}sudo bash $0${PLAIN}"
-            echo -e "${CYAN}方法2: ${GREEN}sudo su${PLAIN} 然后 ${GREEN}bash $0${PLAIN}"
-            exit 1
-        fi
-    else
-        echo -e "${YELLOW}系统中没有发现sudo命令，请尝试以下方法获取root权限:${PLAIN}"
-        echo -e "${CYAN}方法1: ${GREEN}su -${PLAIN} 输入root密码后执行 ${GREEN}bash $0${PLAIN}"
-        echo -e "${CYAN}方法2: 重新登录为root用户后执行脚本${PLAIN}"
-        echo -e "${CYAN}方法3: ${GREEN}chmod +x $0${PLAIN} 然后以root用户执行 ${GREEN}./$0${PLAIN}"
-        exit 1
+    # 如果状态文件不存在，返回空值
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo -e "${YELLOW}警告: 状态文件不存在${PLAIN}" >&2
+        echo ""
+        return 1
     fi
-fi
+    
+    local value=$(jq -r ".$key" "$STATE_FILE" 2>/dev/null)
+    if [[ $? -ne 0 ]]; then
+        echo -e "${YELLOW}警告: 无法读取状态文件中的 '$key'${PLAIN}" >&2
+        echo ""
+        return 1
+    fi
+    
+    echo "$value"
+}
 
-echo -e "${CYAN}开始配置Mihomo代理机...${PLAIN}"
-update_state "installation_stage" "网络配置"
+# 更新状态值
+update_state() {
+    local key=$1
+    local value=$2
+    
+    # 如果状态文件不存在，尝试创建它
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo -e "${YELLOW}警告: 状态文件不存在，尝试创建...${PLAIN}"
+        
+        # 确保 FILES_DIR 目录存在
+        if [[ ! -d "$FILES_DIR" ]]; then
+            mkdir -p "$FILES_DIR"
+            if [[ $? -ne 0 ]]; then
+                handle_error "错误: 无法创建目录 $FILES_DIR"
+            fi
+            echo -e "${GREEN}已创建目录: $FILES_DIR${PLAIN}"
+        fi
+        
+        # 创建基本状态文件
+        cat > "$STATE_FILE" << EOF
+{
+  "version": "1.0",
+  "mihomo_ip": "",
+  "interface_ip": "",
+  "main_interface": "$(ip route | grep default | awk '{print $5}' | head -n 1)",
+  "macvlan_interface": "mihomo_veth",
+  "installation_stage": "初始化",
+  "config_type": "",
+  "docker_method": "direct_pull",
+  "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+        log_message "信息" "创建了新的状态文件"
+    fi
+    
+    jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$STATE_FILE" > "${STATE_FILE}.tmp"
+    if [[ $? -eq 0 ]]; then
+        mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        log_message "信息" "更新状态: $key = $value"
+    else
+        handle_error "错误: 无法更新状态文件"
+    fi
+}
 
-# 安装所需依赖
-echo -e "${CYAN}更新系统包并安装必要依赖...${PLAIN}"
-apt update && apt install -y docker.io curl wget jq iproute2 iputils-ping arping tar gzip
+# 检查Docker是否已安装
+check_docker() {
+    if ! command -v docker &> /dev/null; then
+        echo -e "${YELLOW}未检测到Docker，将自动安装...${PLAIN}"
+        return 1
+    fi
+    return 0
+}
 
-# 检查Docker是否安装成功
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}Docker安装失败，请手动安装后重试${PLAIN}"
-    exit 1
-fi
+# 安装Docker
+install_docker() {
+    echo -e "${CYAN}正在安装Docker...${PLAIN}"
+    
+    # 安装必要的软件包
+    apt-get update
+    apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+    
+    # 添加Docker官方GPG密钥
+    curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add -
+    
+    # 添加Docker软件源
+    echo "deb [arch=amd64] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+    
+    # 更新软件包列表并安装Docker
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io
+    
+    # 启动Docker服务
+    systemctl start docker
+    systemctl enable docker
+    
+    # 验证安装
+    if docker --version &> /dev/null; then
+        echo -e "${GREEN}Docker安装完成${PLAIN}"
+        return 0
+    else
+        handle_error "错误: Docker安装失败"
+    fi
+}
 
-echo -e "${GREEN}Docker已安装${PLAIN}"
-
-# 启动Docker服务
-systemctl start docker
-systemctl enable docker
-
-# 设置网卡混杂模式
-echo -e "${CYAN}设置网卡混杂模式...${PLAIN}"
-ip link set $MAIN_INTERFACE promisc on
-
-# 创建持久化的promisc设置
-cat > /etc/systemd/system/promisc-$MAIN_INTERFACE.service << EOL
+# 创建Docker网络
+create_docker_network() {
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    local interface_ip=$(get_state_value "interface_ip")
+    local main_interface=$(get_state_value "main_interface")
+    local macvlan_interface=$(get_state_value "macvlan_interface")
+    macvlan_interface=${macvlan_interface:-"mihomo_veth"}
+    
+    echo -e "${CYAN}正在检查Docker macvlan网络...${PLAIN}"
+    
+    # 先检查网络是否已存在
+    if docker network ls | grep -q mnet; then
+        echo -e "${YELLOW}Docker macvlan网络 'mnet' 已存在，跳过创建步骤${PLAIN}"
+    else
+        echo -e "${CYAN}正在创建Docker macvlan网络...${PLAIN}"
+        
+        # 创建macvlan网络
+        docker network create -d macvlan \
+            --subnet=$(ip route | grep default | awk '{print $3}' | cut -d. -f1-3).0/24 \
+            --gateway=$(ip route | grep default | awk '{print $3}') \
+            -o parent=$main_interface \
+            mnet
+            
+        if [[ $? -ne 0 ]]; then
+            handle_error "错误: Docker网络创建失败"
+        fi
+        
+        echo -e "${GREEN}Docker网络已创建${PLAIN}"
+    fi
+    
+    # 确保主机上也有对应的macvlan接口
+    echo -e "${CYAN}正在检查主机macvlan接口...${PLAIN}"
+    if ip link show | grep -q "$macvlan_interface"; then
+        echo -e "${YELLOW}主机macvlan接口 '$macvlan_interface' 已存在，跳过创建步骤${PLAIN}"
+    else
+        echo -e "${CYAN}正在创建主机macvlan接口...${PLAIN}"
+        
+        # 创建macvlan接口
+        ip link add $macvlan_interface link $main_interface type macvlan mode bridge
+        
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}警告: 主机macvlan接口创建失败，将尝试继续${PLAIN}"
+        else
+            # 配置接口IP并启用
+            ip addr add $interface_ip/24 dev $macvlan_interface
+            ip link set $macvlan_interface up
+            
+            # 添加到mihomo_ip的路由
+            ip route add $mihomo_ip dev $macvlan_interface
+            
+            echo -e "${GREEN}主机macvlan接口已创建并配置${PLAIN}"
+        fi
+    fi
+    
+    # 设置主接口为混杂模式
+    echo -e "${CYAN}正在设置主接口为混杂模式...${PLAIN}"
+    ip link set $main_interface promisc on
+    
+    # 创建持久化的混杂模式服务
+    echo -e "${CYAN}正在创建混杂模式持久化服务...${PLAIN}"
+    cat > "/etc/systemd/system/promisc-$main_interface.service" << EOF
 [Unit]
-Description=Set $MAIN_INTERFACE to promiscuous mode
+Description=Set $main_interface interface to promiscuous mode
 After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/sbin/ip link set $MAIN_INTERFACE promisc on
+ExecStart=/sbin/ip link set $main_interface promisc on
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-EOL
+EOF
 
-systemctl daemon-reload
-systemctl enable promisc-$MAIN_INTERFACE.service
-
-# 创建Docker macvlan网络
-echo -e "${CYAN}创建Docker macvlan网络...${PLAIN}"
-SUBNET=$(echo $MIHOMO_IP | cut -d '.' -f 1,2,3).0/24
-GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n 1)
-
-# 检查是否已存在macvlan网络
-if docker network ls | grep -q mnet; then
-    echo -e "${YELLOW}已存在macvlan网络，将重新创建...${PLAIN}"
-    docker network rm mnet &>/dev/null || {
-        echo -e "${YELLOW}注意: 无法删除现有网络，可能被容器使用。尝试停止mihomo容器...${PLAIN}"
-        docker stop mihomo &>/dev/null
-        docker rm mihomo &>/dev/null
-        docker network rm mnet &>/dev/null || {
-            echo -e "${YELLOW}警告: 无法删除网络，将继续使用现有网络${PLAIN}"
-        }
-    }
-fi
-
-# 确保网络存在，如果不存在或者成功删除了，就创建新网络
-if ! docker network ls | grep -q mnet; then
-    echo -e "${CYAN}创建Docker macvlan网络...${PLAIN}"
-    docker network create -d macvlan --subnet=$SUBNET --gateway=$GATEWAY -o parent=$MAIN_INTERFACE mnet || {
-        echo -e "${RED}创建macvlan网络失败，尝试不同方式...${PLAIN}"
-        docker network create -d macvlan --subnet=$SUBNET --gateway=$GATEWAY -o parent=$MAIN_INTERFACE:0 mnet || {
-            echo -e "${RED}创建macvlan网络失败，请检查网络配置${PLAIN}"
-            exit 1
-        }
-    }
-else
-    echo -e "${YELLOW}继续使用现有macvlan网络${PLAIN}"
-fi
-
-update_state "installation_stage" "准备配置文件"
-
-# 准备Mihomo配置目录
-echo -e "${CYAN}准备Mihomo配置目录...${PLAIN}"
-mkdir -p $CONF_DIR
-
-# 检查现有配置文件
-EXISTING_CONFIG=0
-if [[ -f "$CONF_DIR/config.yaml" ]]; then
-    echo -e "${YELLOW}检测到现有配置文件: $CONF_DIR/config.yaml${PLAIN}"
-    # 自动使用现有配置文件
-    echo -e "${GREEN}自动使用现有配置文件${PLAIN}"
-    EXISTING_CONFIG=1
+    # 启用服务
+    systemctl daemon-reload
+    systemctl enable "promisc-$main_interface.service"
     
-    # 检查external-controller部分是否需要更新IP地址
-    if grep -q "external-controller:" "$CONF_DIR/config.yaml"; then
-        CURRENT_CONTROLLER_IP=$(grep "external-controller:" "$CONF_DIR/config.yaml" | awk -F':' '{print $2}' | awk -F':' '{print $1}' | tr -d ' ')
-        if [[ "$CURRENT_CONTROLLER_IP" != "$MIHOMO_IP" && "$CURRENT_CONTROLLER_IP" != "0.0.0.0" ]]; then
-            echo -e "${YELLOW}配置文件中控制台IP地址($CURRENT_CONTROLLER_IP)与当前设置($MIHOMO_IP)不一致${PLAIN}"
-            echo -e "${CYAN}正在更新控制台IP地址...${PLAIN}"
-            sed -i "s/external-controller: $CURRENT_CONTROLLER_IP/external-controller: $MIHOMO_IP/g" "$CONF_DIR/config.yaml"
-            echo -e "${GREEN}控制台IP地址已更新${PLAIN}"
-        fi
+    # 检查接口状态
+    echo -e "${CYAN}检查网络配置状态...${PLAIN}"
+    ip link show $main_interface | grep -q "PROMISC" && \
+        echo -e "${GREEN}主接口已设置为混杂模式${PLAIN}" || \
+        echo -e "${RED}警告: 主接口混杂模式可能未生效${PLAIN}"
+    
+    ip link show $macvlan_interface 2>/dev/null && \
+        echo -e "${GREEN}macvlan接口已创建${PLAIN}" || \
+        echo -e "${RED}警告: macvlan接口未找到${PLAIN}"
+}
+
+# 创建配置目录
+create_config_dir() {
+    echo -e "${CYAN}正在创建配置目录...${PLAIN}"
+    
+    mkdir -p "$CONF_DIR"
+    if [[ $? -ne 0 ]]; then
+        handle_error "错误: 配置目录创建失败"
     fi
     
-    # 检查bind-address是否为"*"，如果不是则提示保持"*"更好
-    if grep -q "bind-address:" "$CONF_DIR/config.yaml"; then
-        CURRENT_BIND=$(grep "bind-address:" "$CONF_DIR/config.yaml" | awk '{print $2}' | tr -d '"' | tr -d "'")
-        if [[ "$CURRENT_BIND" != "*" ]]; then
-            echo -e "${YELLOW}注意: 当前bind-address设置为'$CURRENT_BIND'，建议设置为'*'以监听所有地址${PLAIN}"
-            read -p "是否将bind-address设置为'*'? (y/n): " change_bind
-            if [[ "$change_bind" == "y" || "$change_bind" == "Y" ]]; then
-                sed -i "s/bind-address: $CURRENT_BIND/bind-address: \"*\"/g" "$CONF_DIR/config.yaml"
-                echo -e "${GREEN}bind-address已设置为'*'${PLAIN}"
+    echo -e "${GREEN}配置目录已创建${PLAIN}"
+}
+
+# 复制配置文件
+copy_config_file() {
+    # 首先在files目录中查找配置文件
+    local config_template="$SCRIPT_DIR/config.yaml"
+    
+    echo -e "${CYAN}正在复制配置文件...${PLAIN}"
+    
+    # 创建配置目录
+    mkdir -p "$CONF_DIR"
+    
+    # 检查配置文件是否存在
+    if [[ ! -f "$config_template" ]]; then
+        echo -e "${YELLOW}在files目录中未找到配置文件，尝试其他位置...${PLAIN}"
+        
+        # 尝试其他可能的路径
+        local potential_paths=(
+            "$SCRIPT_DIR/../config.yaml"               # docker版mihomo/config.yaml
+            "$(dirname $SCRIPT_DIR)/config.yaml"       # docker版mihomo/config.yaml (另一种写法)
+            "$SCRIPT_DIR/../../config.yaml"            # mihomo-proxy/config.yaml
+            "/root/mihomo-proxy/docker版mihomo/config.yaml"  # 绝对路径
+            "/root/mihomo-proxy/config.yaml"           # 根目录下
+        )
+        
+        for path in "${potential_paths[@]}"; do
+            echo -e "${CYAN}检查: $path${PLAIN}"
+            if [[ -f "$path" ]]; then
+                echo -e "${GREEN}找到配置文件: $path${PLAIN}"
+                config_template="$path"
+                break
             fi
-        else
-            echo -e "${GREEN}检测到bind-address已设置为'*'，这是推荐的设置${PLAIN}"
-        fi
-    fi
-fi
-
-# 如果不使用现有配置，则创建新配置
-if [[ $EXISTING_CONFIG -eq 0 ]]; then
-    update_state "config_type" "preset"
-    echo -e "${CYAN}使用预设配置文件...${PLAIN}"
-    
-    # 复制配置模板
-    cp "$CONFIG_TEMPLATE" $CONF_DIR/config.yaml
-    
-    # 替换配置文件中的VPS_IP（但不替换bind-address的值）
-    sed -i "/bind-address:/! s/VPS_IP/$MIHOMO_IP/g" $CONF_DIR/config.yaml
-    
-    # 配置文件说明
-    echo -e "${YELLOW}已使用预设配置文件。您需要根据自己的代理服务器信息修改配置文件中的关键参数：${PLAIN}"
-    echo -e "${YELLOW}配置文件路径: $CONF_DIR/config.yaml${PLAIN}"
-    echo -e "${YELLOW}- 编辑配置文件，找到proxies部分${PLAIN}"
-    echo -e "${YELLOW}- 将VPS_IP替换为您的服务器IP地址${PLAIN}"
-    echo -e "${YELLOW}- 替换your_password为您设置的密码${PLAIN}"
-    echo -e "${YELLOW}- 根据您的网络情况调整上传/下载速度参数${PLAIN}"
-    echo -e "${YELLOW}您可以使用以下命令编辑配置文件:${PLAIN}"
-    echo -e "${YELLOW}  nano $CONF_DIR/config.yaml${PLAIN}"
-    echo -e "${YELLOW}或者${PLAIN}"
-    echo -e "${YELLOW}  vim $CONF_DIR/config.yaml${PLAIN}"
-fi
-
-# 下载UI文件
-update_state "installation_stage" "下载UI文件"
-echo -e "${CYAN}下载Mihomo UI界面...${PLAIN}"
-
-# 检查是否已有UI文件
-EXISTING_UI=0
-if [[ -d "$CONF_DIR/ui" ]] && ls -A "$CONF_DIR/ui" &> /dev/null; then
-    echo -e "${YELLOW}检测到现有UI文件，自动使用现有UI文件${PLAIN}"
-    EXISTING_UI=1
-else
-    mkdir -p $CONF_DIR/ui
-fi
-
-if [[ $EXISTING_UI -eq 0 ]]; then
-    # 尝试获取最新版本
-    echo -e "${CYAN}正在检查最新版本...${PLAIN}"
-    LATEST_VERSION=$(curl -s https://api.github.com/repos/MetaCubeX/metacubexd/releases/latest | grep "tag_name" | cut -d '"' -f 4)
-
-    if [[ -z "$LATEST_VERSION" ]]; then
-        echo -e "${YELLOW}警告: 无法获取最新版本信息，使用默认版本v1.187.1${PLAIN}"
-        LATEST_VERSION="v1.187.1"
-    fi
-
-    echo -e "${GREEN}检测到最新版本: $LATEST_VERSION${PLAIN}"
-
-    # 下载UI文件
-    download_ui() {
-        echo -e "${CYAN}正在下载UI包...${PLAIN}"
-        if curl -L -o /tmp/compressed-dist.tgz "https://github.com/MetaCubeX/metacubexd/releases/download/$LATEST_VERSION/compressed-dist.tgz"; then
-            echo -e "${GREEN}UI包下载成功${PLAIN}"
+        done
+        
+        # 如果仍未找到配置文件
+        if [[ ! -f "$config_template" ]]; then
+            # 显示目录内容以帮助调试
+            echo -e "${YELLOW}当前脚本目录内容:${PLAIN}"
+            ls -la "$SCRIPT_DIR" || echo "无法列出目录内容"
+            echo -e "${YELLOW}父目录内容:${PLAIN}"
+            ls -la "$(dirname $SCRIPT_DIR)" || echo "无法列出目录内容"
             
-            # 解压UI文件
-            if tar -xzf /tmp/compressed-dist.tgz -C $CONF_DIR/ui; then
-                echo -e "${GREEN}UI文件解压成功${PLAIN}"
-                return 0
-            else
-                echo -e "${RED}UI文件解压失败${PLAIN}"
-                return 1
-            fi
+            handle_error "配置文件不存在"
+        fi
+    else
+        echo -e "${GREEN}在files目录中找到配置文件${PLAIN}"
+    fi
+    
+    # 复制配置文件
+    cp "$config_template" "$CONF_DIR/config.yaml"
+    if [[ $? -ne 0 ]]; then
+        handle_error "错误: 配置文件复制失败"
+    fi
+    
+    # 设置配置文件权限
+    chmod 644 "$CONF_DIR/config.yaml"
+    echo -e "${GREEN}配置文件已复制到 $CONF_DIR/config.yaml${PLAIN}"
+    
+    # 下载和设置UI包
+    echo -e "${CYAN}正在设置UI界面...${PLAIN}"
+    mkdir -p "$CONF_DIR/ui"
+    
+    # 检查是否已存在UI文件
+    if [[ -f "$CONF_DIR/ui/index.html" ]]; then
+        echo -e "${YELLOW}UI文件已存在，跳过下载${PLAIN}"
+    else
+        echo -e "${CYAN}正在下载最新版metacubexd界面...${PLAIN}"
+        
+        # 下载UI包
+        if ! command -v wget &> /dev/null; then
+            echo -e "${YELLOW}未安装wget，正在安装...${PLAIN}"
+            apt-get update && apt-get install -y wget
+        fi
+        
+        # 创建临时目录
+        local tmp_dir=$(mktemp -d)
+        cd "$tmp_dir"
+        
+        # 下载并解压UI包
+        if ! wget https://github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz; then
+            echo -e "${RED}警告: UI包下载失败，将使用无UI模式${PLAIN}"
         else
-            echo -e "${RED}UI包下载失败${PLAIN}"
-            return 1
+            tar -xzf compressed-dist.tgz -C "$CONF_DIR/ui"
+            echo -e "${GREEN}UI界面已设置${PLAIN}"
         fi
-    }
-
-    # 尝试下载UI包
-    if ! download_ui; then
-        echo -e "${YELLOW}尝试备选下载方式...${PLAIN}"
-        if ! download_ui; then
-            echo -e "${RED}UI下载失败，请手动下载UI文件${PLAIN}"
-            echo -e "${YELLOW}您可以稍后手动执行以下命令:${PLAIN}"
-            echo -e "${YELLOW}  wget https://github.com/MetaCubeX/metacubexd/releases/download/$LATEST_VERSION/compressed-dist.tgz${PLAIN}"
-            echo -e "${YELLOW}  tar -xzf compressed-dist.tgz -C $CONF_DIR/ui${PLAIN}"
-        fi
-    fi
-else
-    echo -e "${GREEN}使用现有UI文件，跳过UI下载步骤${PLAIN}"
-fi
-
-# 安装mihomo
-update_state "installation_stage" "安装Mihomo"
-echo -e "${CYAN}开始安装Mihomo...${PLAIN}"
-
-# 检查是否有现有的mihomo容器
-if docker ps -a | grep -q mihomo; then
-    echo -e "${YELLOW}检测到系统中已安装mihomo容器，将自动删除并重新安装${PLAIN}"
-    echo -e "${CYAN}正在停止并移除现有mihomo容器...${PLAIN}"
-    docker stop mihomo &>/dev/null
-    docker rm mihomo &>/dev/null
-fi
-
-# 从Docker Hub拉取镜像
-update_state "docker_method" "direct_pull"
-echo -e "${CYAN}正在从Docker Hub拉取镜像...${PLAIN}"
-
-# 尝试从Docker Hub拉取镜像
-if ! docker pull metacubex/mihomo:latest; then
-    echo -e "${RED}拉取镜像失败，尝试使用本地镜像${PLAIN}"
-    update_state "docker_method" "local_image"
-    
-    # 检查是否有本地镜像文件
-    if [[ ! -f "./mihomo-image.tar" ]]; then
-        echo -e "${RED}未找到本地镜像文件: ./mihomo-image.tar${PLAIN}"
-        echo -e "${YELLOW}请先在有科学上网环境的电脑上执行以下命令:${PLAIN}"
-        echo -e "${YELLOW}  docker pull metacubex/mihomo:latest${PLAIN}"
-        echo -e "${YELLOW}  docker save metacubex/mihomo:latest -o mihomo-image.tar${PLAIN}"
-        echo -e "${YELLOW}然后将mihomo-image.tar文件上传到当前目录${PLAIN}"
-        exit 1
+        
+        # 清理临时文件
+        cd - > /dev/null
+        rm -rf "$tmp_dir"
     fi
     
-    echo -e "${CYAN}正在导入本地镜像文件...${PLAIN}"
-    if ! docker load -i ./mihomo-image.tar; then
-        echo -e "${RED}导入镜像文件失败${PLAIN}"
-        exit 1
-    fi
-fi
+    echo -e "${GREEN}配置设置完成${PLAIN}"
+}
 
-# 启动mihomo容器
-echo -e "${CYAN}启动Mihomo容器...${PLAIN}"
-if ! docker run -d --privileged \
-  --name=mihomo --restart=always \
-  --network mnet --ip $MIHOMO_IP \
-  -v $CONF_DIR:/root/.config/mihomo/ \
-  metacubex/mihomo:latest; then
+# 启动Mihomo容器
+start_mihomo_container() {
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    local interface_ip=$(get_state_value "interface_ip")
     
-    echo -e "${RED}启动Mihomo容器失败${PLAIN}"
-    exit 1
-fi
+    echo -e "${CYAN}正在启动Mihomo容器...${PLAIN}"
+    
+    # 停止并删除已存在的容器
+    docker stop mihomo 2>/dev/null
+    docker rm mihomo 2>/dev/null
+    
+    # 启动新容器 - 按照参考脚本的格式
+    docker run -d --privileged \
+        --name=mihomo --restart=always \
+        --network mnet --ip "$mihomo_ip" \
+        -v "$CONF_DIR:/root/.config/mihomo/" \
+        metacubex/mihomo:latest
+        
+    if [[ $? -ne 0 ]]; then
+        handle_error "错误: 容器启动失败"
+    fi
+    
+    echo -e "${GREEN}Mihomo容器已启动${PLAIN}"
+}
 
-# 检查容器是否成功运行
-if ! docker ps | grep -q mihomo; then
-    echo -e "${RED}Mihomo容器未能成功运行${PLAIN}"
-    echo -e "${YELLOW}查看容器日志:${PLAIN}"
-    docker logs mihomo
-    exit 1
-fi
+# 主函数
+main() {
+    # 创建日志文件
+    touch "$LOG_FILE"
+    chmod 644 "$LOG_FILE"
+    log_message "信息" "开始执行代理机配置脚本"
+    
+    # 检查Docker
+    if ! check_docker; then
+        install_docker
+    fi
+    
+    # 创建Docker网络
+    create_docker_network
+    
+    # 创建配置目录
+    create_config_dir
+    
+    # 复制配置文件
+    copy_config_file
+    
+    # 启动Mihomo容器
+    start_mihomo_container
+    
+    # 更新安装状态
+    update_state "installation_stage" "Step2_Completed"
+    update_state "config_type" "preset"
+    update_state "timestamp" "$(date '+%Y-%m-%d %H:%M:%S')"
+    
+    # 显示完成信息
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    echo -e "\n${GREEN}======================================================${PLAIN}"
+    echo -e "${GREEN}代理机配置完成！${PLAIN}"
+    echo -e "${GREEN}控制面板地址: http://${mihomo_ip}:9090/ui${PLAIN}"
+    echo -e "${GREEN}======================================================${PLAIN}"
+    
+    log_message "信息" "代理机配置脚本执行完成"
+}
 
-update_state "installation_stage" "配置网络"
-
-# 设置宿主机和容器通信
-echo -e "${CYAN}配置宿主机与容器通信...${PLAIN}"
-
-# 检查是否已存在接口
-if ip link show | grep -q $MACVLAN_INTERFACE; then
-    echo -e "${YELLOW}检测到已存在的macvlan接口，尝试删除...${PLAIN}"
-    ip link del $MACVLAN_INTERFACE &>/dev/null
-fi
-
-# 按照参考脚本直接创建网络配置（不使用系统服务）
-echo -e "${CYAN}创建macvlan接口: $MACVLAN_INTERFACE${PLAIN}"
-ip link add $MACVLAN_INTERFACE link $MAIN_INTERFACE type macvlan mode bridge
-if [ $? -ne 0 ]; then
-    echo -e "${RED}创建macvlan接口失败${PLAIN}"
-    echo -e "${YELLOW}请检查网络接口名称是否正确: $MAIN_INTERFACE${PLAIN}"
-    # 尝试使用其他方式创建
-    echo -e "${CYAN}尝试使用替代方法创建接口...${PLAIN}"
-    ip link add $MACVLAN_INTERFACE link $MAIN_INTERFACE type macvlan mode bridge || true
-fi
-
-echo -e "${CYAN}为接口分配IP地址: $INTERFACE_IP/24${PLAIN}"
-ip addr add $INTERFACE_IP/24 dev $MACVLAN_INTERFACE
-if [ $? -ne 0 ]; then
-    echo -e "${RED}分配IP地址失败${PLAIN}"
-    # 尝试先清除接口再添加
-    ip addr flush dev $MACVLAN_INTERFACE 2>/dev/null
-    ip addr add $INTERFACE_IP/24 dev $MACVLAN_INTERFACE || true
-fi
-
-echo -e "${CYAN}启用接口...${PLAIN}"
-ip link set $MACVLAN_INTERFACE up
-
-echo -e "${CYAN}添加路由规则: $MIHOMO_IP${PLAIN}"
-ip route add $MIHOMO_IP dev $MACVLAN_INTERFACE 2>/dev/null || true
-
-# 验证配置是否生效
-if ip link show $MACVLAN_INTERFACE 2>/dev/null | grep -q "UP"; then
-    echo -e "${GREEN}网络接口配置成功!${PLAIN}"
-    echo -e "${GREEN}• Mihomo IP: $MIHOMO_IP${PLAIN}"
-    echo -e "${GREEN}• 接口 IP: $INTERFACE_IP${PLAIN}"
-else
-    echo -e "${RED}网络接口配置失败${PLAIN}"
-    echo -e "${YELLOW}请尝试手动执行以下命令:${PLAIN}"
-    echo -e "${YELLOW}ip link add $MACVLAN_INTERFACE link $MAIN_INTERFACE type macvlan mode bridge${PLAIN}"
-    echo -e "${YELLOW}ip addr add $INTERFACE_IP/24 dev $MACVLAN_INTERFACE${PLAIN}"
-    echo -e "${YELLOW}ip link set $MACVLAN_INTERFACE up${PLAIN}"
-    echo -e "${YELLOW}ip route add $MIHOMO_IP dev $MACVLAN_INTERFACE${PLAIN}"
-fi
-
-# 不创建网络重建脚本，避免依赖于系统服务
-# 注意：网络配置已直接在上面通过命令行操作完成
-
-# 显示网络重建命令（供用户在需要时手动执行）
-echo -e "${YELLOW}如果网络配置丢失，可以执行以下命令重建网络：${PLAIN}"
-echo -e "${CYAN}ip link add $MACVLAN_INTERFACE link $MAIN_INTERFACE type macvlan mode bridge${PLAIN}"
-echo -e "${CYAN}ip addr add $INTERFACE_IP/24 dev $MACVLAN_INTERFACE${PLAIN}"
-echo -e "${CYAN}ip link set $MACVLAN_INTERFACE up${PLAIN}"
-echo -e "${CYAN}ip route add $MIHOMO_IP dev $MACVLAN_INTERFACE${PLAIN}"
-
-update_state "installation_stage" "安装完成"
-echo -e "${GREEN}Mihomo代理机配置完成!${PLAIN}"
-echo -e "${GREEN}Mihomo IP: $MIHOMO_IP${PLAIN}"
-echo -e "${GREEN}控制台地址: http://$MIHOMO_IP:9090/ui${PLAIN}"
-echo -e "${YELLOW}注意: 您需要在路由器上配置以使用此代理${PLAIN}"
-echo
-echo -e "${CYAN}请在其他设备上访问控制面板检查状态${PLAIN}"
-echo -e "${CYAN}http://$MIHOMO_IP:9090/ui${PLAIN}"
+# 执行主函数
+main

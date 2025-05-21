@@ -27,7 +27,7 @@ get_state_value() {
     value=$(jq -r --arg key_jq "$key" '.[$key_jq] // ""' "$STATE_FILE" 2>/dev/null)
     # Check jq's exit status.
     if [[ $? -ne 0 ]]; then
-        echo -e "${YELLOW}Warning: Could not read '$key' from state file $STATE_FILE using jq. File might be corrupted or not valid JSON.${PLAIN}" >&2
+        echo -e "${YELLOW}警告: 无法使用jq从状态文件 $STATE_FILE 中读取 '$key'。文件可能已损坏或不是有效的JSON格式。${PLAIN}" >&2
         # Fallback to grep for basic cases if jq fails (e.g. file not JSON yet)
         value=$(grep -o "\"$key\": *\"[^\"]*\"" "$STATE_FILE" | grep -o "\"$key\": *\"\([^\"]*\)\"" | sed -E 's/.*"[^"]+":[[:space:]]*"([^"]*)".*/\1/')
         echo "$value"
