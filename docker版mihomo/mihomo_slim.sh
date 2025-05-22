@@ -437,6 +437,7 @@ find_available_ip() {
 # 交互式设置mihomo IP
 setup_mihomo_ip() {
     local stored_ip=$(get_state_value "mihomo_ip")
+    local previous_interface_ip=$(get_state_value "interface_ip")
     
     if [[ -n "$stored_ip" ]]; then
         read -p "检测到之前配置的mihomo IP: $stored_ip, 是否使用此IP? (y/n): " use_stored
@@ -480,16 +481,11 @@ setup_mihomo_ip() {
         return
     fi
     
-    echo -e "${GREEN}将使用 $MIHOMO_IP 作为mihomo的IP地址${PLAIN}"
     # 确保状态文件存在
     if [[ ! -f "$STATE_FILE" ]]; then
         echo -e "${YELLOW}状态文件不存在，初始化状态文件...${PLAIN}"
         init_state_file
     fi
-    
-    # 更新状态文件
-    update_state "mihomo_ip" "$MIHOMO_IP"
-    echo -e "${GREEN}已将 mihomo_ip 更新为 $MIHOMO_IP${PLAIN}"
     
     # 设置接口IP (mihomo IP + 1)
     local ip_parts=(${MIHOMO_IP//./ })
@@ -503,21 +499,14 @@ setup_mihomo_ip() {
         return
     fi
     
-    update_state "interface_ip" "$INTERFACE_IP"
-    echo -e "${GREEN}已将 interface_ip 更新为 $INTERFACE_IP${PLAIN}"
-    
-    update_state "main_interface" "$MAIN_INTERFACE"
-    update_state "macvlan_interface" "mihomo_veth"
-    
-    # 检查状态文件是否已更新
-    echo -e "${CYAN}检查状态文件更新...${PLAIN}"
-    local check_ip=$(get_state_value "mihomo_ip")
-    if [[ "$check_ip" == "$MIHOMO_IP" ]]; then
-        echo -e "${GREEN}状态文件更新成功${PLAIN}"
-    else
-        echo -e "${RED}警告: 状态文件似乎未正确更新，请检查文件权限或路径${PLAIN}"
-        echo -e "${YELLOW}状态文件路径: $STATE_FILE${PLAIN}"
-        ls -la "$(dirname "$STATE_FILE")" 2>/dev/null || echo "无法访问目录"
+    # 仅当IP实际更改时才显示更新信息
+    if [[ "$MIHOMO_IP" != "$stored_ip" ]]; then
+        echo -e "${GREEN}将使用 $MIHOMO_IP 作为mihomo的IP地址${PLAIN}"
+        update_state "mihomo_ip" "$MIHOMO_IP"
+        update_state "interface_ip" "$INTERFACE_IP"
+        update_state "main_interface" "$MAIN_INTERFACE"
+        update_state "macvlan_interface" "mihomo_veth"
+        echo -e "${GREEN}IP配置已更新${PLAIN}"
     fi
 }
 
@@ -846,31 +835,28 @@ show_menu() {
             # 检查容器是否正在运行
             if ! docker ps | grep -q mihomo; then
                 echo -e "${YELLOW}警告: mihomo容器未运行${PLAIN}"
-                echo -e "${CYAN}尝试启动mihomo容器...${PLAIN}"
+                echo -e "${CYAN}正在启动服务...${PLAIN}"
                 if ! docker start mihomo; then
-                    echo -e "${RED}容器启动失败${PLAIN}"
+                    echo -e "${RED}启动失败${PLAIN}"
                     echo -e "${YELLOW}请检查Docker日志:${PLAIN}"
                     docker logs mihomo --tail 20
                     read -p "按任意键返回..." key
                     show_menu
                     return
                 fi
-                echo -e "${GREEN}Mihomo容器已成功启动${PLAIN}"
+                echo -e "${GREEN}服务已成功启动${PLAIN}"
             else
-                echo -e "${CYAN}正在重启Mihomo服务...${PLAIN}"
+                echo -e "${CYAN}正在重启服务...${PLAIN}"
                 if ! docker restart mihomo; then
-                    echo -e "${RED}错误: 重启Mihomo服务失败${PLAIN}"
-                    echo -e "${YELLOW}请检查Docker日志并尝试手动重启容器${PLAIN}"
+                    echo -e "${RED}重启失败${PLAIN}"
+                    echo -e "${YELLOW}请检查Docker日志:${PLAIN}"
+                    docker logs mihomo --tail 20
                     read -p "按任意键返回..." key
                     show_menu
                     return
                 fi
-                echo -e "${GREEN}Mihomo服务已成功重启${PLAIN}"
+                echo -e "${GREEN}服务已成功重启${PLAIN}"
             fi
-            
-            # 等待几秒让服务启动
-            echo -e "${CYAN}正在等待服务启动...${PLAIN}"
-            sleep 3
             
             # 验证服务状态
             if docker ps | grep -q mihomo; then
@@ -878,7 +864,7 @@ show_menu() {
                 
                 # 获取mihomo IP
                 local mihomo_ip=$(get_state_value "mihomo_ip")
-                echo -e "${CYAN}Mihomo服务信息:${PLAIN}"
+                echo -e "${CYAN}服务信息:${PLAIN}"
                 echo -e "${GREEN}● 控制面板地址: http://${mihomo_ip}:9090/ui${PLAIN}"
                 echo -e "${GREEN}● 混合代理端口: ${mihomo_ip}:7890${PLAIN}"
                 echo -e "${GREEN}● HTTP代理端口: ${mihomo_ip}:7891${PLAIN}"
@@ -1029,17 +1015,11 @@ show_menu() {
             local macvlan_interface=$(get_state_value "macvlan_interface")
             macvlan_interface=${macvlan_interface:-"mihomo_veth"}
             
-            echo -e "${YELLOW}● 检查网络接口 $macvlan_interface...${PLAIN}"
-            if ip link show "$macvlan_interface" 2>/dev/null; then
-                echo -e "${YELLOW}● 正在删除网络接口 $macvlan_interface...${PLAIN}"
-                ip link del "$macvlan_interface"
-                if ! ip link show "$macvlan_interface" 2>/dev/null; then
-                    echo -e "${GREEN}● Macvlan网络接口已成功删除${PLAIN}"
-                else
-                    echo -e "${RED}● Macvlan网络接口删除失败，请尝试手动删除: ${CYAN}ip link del $macvlan_interface${PLAIN}"
-                fi
-            else
-                echo -e "${YELLOW}● 未找到macvlan网络接口 $macvlan_interface${PLAIN}"
+            echo -e "${YELLOW}● 正在检查和清理网络设置...${PLAIN}"
+            if ip link show "$macvlan_interface" &>/dev/null; then
+                echo -e "${YELLOW}● 正在删除网络接口...${PLAIN}"
+                ip link del "$macvlan_interface" &>/dev/null
+                echo -e "${GREEN}● 网络接口已移除${PLAIN}"
             fi
             
             # 删除安装脚本和状态文件
@@ -1072,7 +1052,7 @@ show_menu() {
                 echo -e "${GREEN}● 网卡混杂模式服务已删除${PLAIN}"
                 
                 # 关闭网卡混杂模式
-                if ip link show 2>/dev/null | grep -q "$main_interface"; then
+                if ip link show "$main_interface" &>/dev/null; then
                     ip link set "$main_interface" promisc off &>/dev/null
                     echo -e "${GREEN}● 已关闭网卡混杂模式${PLAIN}"
                 fi

@@ -218,15 +218,19 @@ EOF
     systemctl daemon-reload
     systemctl enable "promisc-$main_interface.service"
     
-    # 检查接口状态
+    # 检查接口状态 - 简化接口状态输出
     echo -e "${CYAN}检查网络配置状态...${PLAIN}"
-    ip link show $main_interface | grep -q "PROMISC" && \
-        echo -e "${GREEN}主接口已设置为混杂模式${PLAIN}" || \
+    if ip link show $main_interface | grep -q "PROMISC"; then
+        echo -e "${GREEN}主接口已设置为混杂模式${PLAIN}"
+    else
         echo -e "${RED}警告: 主接口混杂模式可能未生效${PLAIN}"
+    fi
     
-    ip link show $macvlan_interface 2>/dev/null && \
-        echo -e "${GREEN}macvlan接口已创建${PLAIN}" || \
+    if ip link show $macvlan_interface 2>/dev/null; then
+        echo -e "${GREEN}macvlan接口已创建${PLAIN}"
+    else
         echo -e "${RED}警告: macvlan接口未找到${PLAIN}"
+    fi
 }
 
 # 创建配置目录
@@ -243,8 +247,8 @@ create_config_dir() {
 
 # 复制配置文件
 copy_config_file() {
-    # 首先在files目录中查找配置文件
-    local config_template="$SCRIPT_DIR/config.yaml"
+    # 直接从files目录中获取配置文件
+    local config_template="$FILES_DIR/config.yaml"
     
     echo -e "${CYAN}正在复制配置文件...${PLAIN}"
     
@@ -253,38 +257,9 @@ copy_config_file() {
     
     # 检查配置文件是否存在
     if [[ ! -f "$config_template" ]]; then
-        echo -e "${YELLOW}在files目录中未找到配置文件，尝试其他位置...${PLAIN}"
-        
-        # 尝试其他可能的路径
-        local potential_paths=(
-            "$SCRIPT_DIR/../config.yaml"               # docker版mihomo/config.yaml
-            "$(dirname $SCRIPT_DIR)/config.yaml"       # docker版mihomo/config.yaml (另一种写法)
-            "$SCRIPT_DIR/../../config.yaml"            # mihomo-proxy/config.yaml
-            "/root/mihomo-proxy/docker版mihomo/config.yaml"  # 绝对路径
-            "/root/mihomo-proxy/config.yaml"           # 根目录下
-        )
-        
-        for path in "${potential_paths[@]}"; do
-            echo -e "${CYAN}检查: $path${PLAIN}"
-            if [[ -f "$path" ]]; then
-                echo -e "${GREEN}找到配置文件: $path${PLAIN}"
-                config_template="$path"
-                break
-            fi
-        done
-        
-        # 如果仍未找到配置文件
-        if [[ ! -f "$config_template" ]]; then
-            # 显示目录内容以帮助调试
-            echo -e "${YELLOW}当前脚本目录内容:${PLAIN}"
-            ls -la "$SCRIPT_DIR" || echo "无法列出目录内容"
-            echo -e "${YELLOW}父目录内容:${PLAIN}"
-            ls -la "$(dirname $SCRIPT_DIR)" || echo "无法列出目录内容"
-            
-            handle_error "配置文件不存在"
-        fi
+        handle_error "错误: 配置文件不存在($config_template)"
     else
-        echo -e "${GREEN}在files目录中找到配置文件${PLAIN}"
+        echo -e "${GREEN}找到配置文件: $config_template${PLAIN}"
     fi
     
     # 复制配置文件
@@ -331,6 +306,8 @@ copy_config_file() {
     fi
     
     echo -e "${GREEN}配置设置完成${PLAIN}"
+    echo -e "${YELLOW}如需修改配置，请使用文本编辑器编辑 $CONF_DIR/config.yaml 文件${PLAIN}"
+    echo -e "${YELLOW}建议使用第三方工具修改yaml配置文件，确保格式正确${PLAIN}"
 }
 
 # 启动Mihomo容器

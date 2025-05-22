@@ -89,17 +89,18 @@ if command -v docker &> /dev/null; then
         # 获取容器详细信息
         CONTAINER_ID=$(docker ps | grep mihomo | awk '{print $1}')
         CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' $CONTAINER_ID)
-        CONTAINER_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' $CONTAINER_ID 2>/dev/null || echo "无健康检查")
         CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $CONTAINER_ID)
         
         echo -e "容器ID: ${GREEN}$CONTAINER_ID${PLAIN}"
         echo -e "容器状态: ${GREEN}$CONTAINER_STATUS${PLAIN}"
-        echo -e "健康状态: ${GREEN}$CONTAINER_HEALTH${PLAIN}"
-        echo -e "容器IP: ${GREEN}$CONTAINER_IP${PLAIN}"
         
         # 显示运行时间
-        UPTIME=$(docker inspect -f '{{.State.StartedAt}}' $CONTAINER_ID)
-        echo -e "启动时间: ${GREEN}$UPTIME${PLAIN}"
+        STARTED_AT=$(docker inspect -f '{{.State.StartedAt}}' $CONTAINER_ID)
+        RUNNING_SECONDS=$(( $(date +%s) - $(date -d "$STARTED_AT" +%s) ))
+        RUNNING_DAYS=$(( $RUNNING_SECONDS / 86400 ))
+        RUNNING_HOURS=$(( ($RUNNING_SECONDS % 86400) / 3600 ))
+        RUNNING_MINUTES=$(( ($RUNNING_SECONDS % 3600) / 60 ))
+        echo -e "运行时间: ${GREEN}${RUNNING_DAYS}天 ${RUNNING_HOURS}小时 ${RUNNING_MINUTES}分钟${PLAIN}"
     else
         echo -e "Mihomo容器: ${RED}未运行${PLAIN}"
         
@@ -126,7 +127,7 @@ fi
 
 # 检查网络接口
 echo
-echo -e "${CYAN}检查网络接口:${PLAIN}"
+echo -e "${CYAN}检查网络接口 (mihomo访问宿主机时使用的IP):${PLAIN}"
 if ip link show | grep -q $MACVLAN_INTERFACE; then
     echo -e "MacVLAN接口: ${GREEN}已创建${PLAIN}"
     IP_ADDR=$(ip -4 addr show $MACVLAN_INTERFACE | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
@@ -190,7 +191,7 @@ else
     echo -e "混杂模式服务: ${RED}未创建${PLAIN}"
 fi
 
-# 检查是否正确配置网络接口（而不是检查系统服务）
+# 检查是否正确配置网络接口
 if ip link show | grep -q "$MACVLAN_INTERFACE"; then
     echo -e "网络接口: ${GREEN}已配置${PLAIN}"
     
@@ -213,11 +214,7 @@ if ip link show | grep -q "$MACVLAN_INTERFACE"; then
     fi
 else
     echo -e "网络接口: ${RED}未配置${PLAIN}"
-    echo -e "${YELLOW}网络接口可能需要重新配置，请手动执行以下命令:${PLAIN}"
-    echo -e "${YELLOW}ip link add $MACVLAN_INTERFACE link $MAIN_INTERFACE type macvlan mode bridge${PLAIN}"
-    echo -e "${YELLOW}ip addr add $INTERFACE_IP/24 dev $MACVLAN_INTERFACE${PLAIN}"
-    echo -e "${YELLOW}ip link set $MACVLAN_INTERFACE up${PLAIN}"
-    echo -e "${YELLOW}ip route add $MIHOMO_IP dev $MACVLAN_INTERFACE${PLAIN}"
+    echo -e "${YELLOW}网络接口可能需要重新配置${PLAIN}"
 fi
 
 # 检查连接性
