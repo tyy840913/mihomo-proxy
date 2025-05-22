@@ -35,10 +35,12 @@ bash mihomo.sh
 
 ```bash
 # 使用curl下载
-curl -fsSL https://raw.githubusercontent.com/mihomo-proxy/mihomo-docker/main/mihomo.sh -o mihomo.sh
+curl -fsSL https://raw.githubusercontent.com/mihomo-proxy/mihomo-docker/mihomo.sh -o mihomo.sh
+```
 
+```bash
 # 或使用wget下载
-wget -O mihomo.sh https://raw.githubusercontent.com/mihomo-proxy/mihomo-docker/main/mihomo.sh
+wget -O mihomo.sh https://raw.githubusercontent.com/mihomo-proxy/mihomo-docker/mihomo.sh
 ```
 
 ### 2. 运行脚本
