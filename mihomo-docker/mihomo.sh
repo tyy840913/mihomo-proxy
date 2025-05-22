@@ -8,33 +8,72 @@
 # ====================================================================================
 # 【使用说明】
 # 
-# 如果您已下载docker版mihomo目录:
-#    cd docker版mihomo
-#    bash mihomo_slim.sh
+# 如果您已下载mihomo-docker目录:
+#    cd mihomo-docker
+#    bash mihomo.sh
 #
 # 或者直接下载脚本:
-#    curl -fsSL https://raw.githubusercontent.com/mihomo-proxy/installer/main/mihomo_slim.sh -o mihomo_slim.sh
-#    chmod +x mihomo_slim.sh
-#    bash mihomo_slim.sh
+#    curl -fsSL https://raw.githubusercontent.com/mihomo-proxy/mihomo-docker/main/mihomo.sh -o mihomo.sh
+#    chmod +x mihomo.sh
+#    bash mihomo.sh
 #
 # 此脚本会自动加载files文件夹下的执行脚本和配置文件
 # 详细说明请参考同目录下的README.md文件
 # ====================================================================================
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-GRAY='\033[0;37m'
-PLAIN='\033[0m'
+# 版本信息
+SCRIPT_VERSION="1.0.0"
 
-# 脚本目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FILES_DIR="$SCRIPT_DIR/files"
+# 处理命令行参数
+if [[ "$1" == "--version" || "$1" == "-v" ]]; then
+    echo "Mihomo 一键安装脚本 v${SCRIPT_VERSION}"
+    exit 0
+fi
 
-# 日志文件
-LOG_FILE="$SCRIPT_DIR/install.log"
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "Mihomo 一键安装脚本 v${SCRIPT_VERSION}"
+    echo
+    echo "使用方法:"
+    echo "  bash mihomo.sh [选项]"
+    echo
+    echo "选项:"
+    echo "  --version, -v     显示版本信息"
+    echo "  --help, -h        显示此帮助信息"
+    echo "  --auto-install    直接执行一键安装，无需进入菜单"
+    echo
+    echo "详细说明请参考README.md文件"
+    exit 0
+fi
+
+# 直接执行一键安装
+if [[ "$1" == "--auto-install" ]]; then
+    # 跳过菜单直接安装
+    one_key_install
+    exit 0
+fi
+
+# 全局环境变量
+script_dir=$(cd "$(dirname "$0")" && pwd)
+FILES_DIR="$script_dir/files"
+STATE_FILE="$FILES_DIR/mihomo_state.json"
+STATE_VERSION="1.0"
+LOG_FILE="/var/log/mihomo_install.log"
+PROXY_SCRIPT="$FILES_DIR/setup_proxy.sh"
+ROUTER_SCRIPT="$FILES_DIR/setup_router.sh"
+CHECK_SCRIPT="$FILES_DIR/check_status.sh"
+CONFIG_TEMPLATE="$FILES_DIR/config.yaml"
+CUSTOM_CONFIG="/etc/mihomo/config.yaml"
+MAIN_INTERFACE=""  # 初始为空，会通过detect_network函数设置
+
+# 颜色代码
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+BLUE="\033[34m"
+PURPLE="\033[35m"
+CYAN="\033[36m"
+GRAY="\033[37m"
+PLAIN="\033[0m"
 
 # 日志函数
 log_message() {
@@ -55,16 +94,6 @@ handle_error() {
     log_message "${RED}错误: $error_message${PLAIN}"
     exit 1
 }
-
-# 状态文件版本
-STATE_VERSION="1.0"
-
-# 状态文件路径
-STATE_FILE="$FILES_DIR/mihomo_state.json"
-PROXY_SCRIPT="$FILES_DIR/setup_proxy.sh"
-ROUTER_SCRIPT="$FILES_DIR/setup_router.sh"
-CHECK_SCRIPT="$FILES_DIR/check_status.sh"
-CONFIG_TEMPLATE="$FILES_DIR/config.yaml"
 
 # 状态验证函数
 validate_state() {
@@ -123,53 +152,19 @@ restore_state() {
     return 1
 }
 
-# 处理命令行参数
-if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    echo -e "Mihomo 一键安装引导脚本 V1.0 使用说明"
-    echo -e "=============================================================="
-    echo -e "使用方法: sudo bash mihomo.sh [选项]"
-    echo -e ""
-    echo -e "选项:"
-    echo -e "  无参数   启动交互式安装向导"
-    echo -e "  -h, --help  显示此帮助信息"
-    echo -e ""
-    echo -e "安装流程:"
-    echo -e "  1. 设置代理机IP地址 - 为mihomo选择一个局域网IP (自动执行)"
-    echo -e "  2. 配置代理机 - 安装Docker和mihomo，设置网络"
-    echo -e "  3. 配置路由器 - 生成路由器配置命令"
-    echo -e ""
-    echo -e "系统要求:"
-    echo -e "  - Debian 10/11/12"
-    echo -e "  - Ubuntu 20.04/22.04/24.04"
-    echo -e "  - 需要root权限"
-    echo -e ""
-    echo -e "备注:"
-    echo -e "  - 控制面板默认访问地址: http://<mihomo-ip>:9090/ui"
-    echo -e "  - 代理默认端口: 7890(混合), 7891(HTTP), 7892(SOCKS5)"
-    echo -e "=============================================================="
-    exit 0
-fi
-
-# 获取脚本所在目录的绝对路径
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-FILES_DIR="$SCRIPT_DIR/files"
-CONF_DIR="/etc/mihomo"
-
 # 检查files目录是否存在
-if [[ ! -d "$FILES_DIR" ]]; then
-    echo -e "${RED}错误: files目录不存在${PLAIN}"
-    echo -e "${RED}files目录用于存放执行脚本和相关配置文件，请确保该目录存在${PLAIN}"
-    exit 1
-fi
+check_files_dir() {
+    if [[ ! -d "$FILES_DIR" ]]; then
+        echo -e "${RED}错误: files目录不存在${PLAIN}"
+        echo -e "${RED}files目录用于存放执行脚本和相关配置文件，请确保该目录存在${PLAIN}"
+        exit 1
+    fi
+}
 
 # 检查执行脚本是否存在
 check_exec_scripts() {
     # 检查files目录是否存在
-    if [[ ! -d "$FILES_DIR" ]]; then
-        mkdir -p "$FILES_DIR"
-        log_message "创建files目录: $FILES_DIR"
-        echo -e "${GREEN}已创建files目录: $FILES_DIR${PLAIN}"
-    fi
+    check_files_dir
     
     # 检查所需的执行脚本
     local scripts=("$PROXY_SCRIPT" "$ROUTER_SCRIPT" "$CHECK_SCRIPT")
@@ -184,8 +179,8 @@ check_exec_scripts() {
             echo -e "${YELLOW}未找到脚本: $script_name，尝试从当前目录加载${PLAIN}"
             
             # 尝试从当前目录加载
-            if [[ -f "$SCRIPT_DIR/$script_name" ]]; then
-                cp "$SCRIPT_DIR/$script_name" "$script"
+            if [[ -f "$script_dir/$script_name" ]]; then
+                cp "$script_dir/$script_name" "$script"
                 chmod +x "$script"
                 echo -e "${GREEN}已加载脚本: $script_name${PLAIN}"
             else
@@ -203,8 +198,8 @@ check_exec_scripts() {
         echo -e "${YELLOW}未找到配置文件: config.yaml，尝试从当前目录加载${PLAIN}"
         
         # 尝试从当前目录加载
-        if [[ -f "$SCRIPT_DIR/config.yaml" ]]; then
-            cp "$SCRIPT_DIR/config.yaml" "$CONFIG_TEMPLATE"
+        if [[ -f "$script_dir/config.yaml" ]]; then
+            cp "$script_dir/config.yaml" "$CONFIG_TEMPLATE"
             echo -e "${GREEN}已加载配置文件: config.yaml${PLAIN}"
         else
             echo -e "${RED}错误: 找不到配置文件: config.yaml${PLAIN}"
@@ -289,26 +284,46 @@ check_os() {
 detect_network() {
     echo -e "${CYAN}正在检测网络环境...${PLAIN}"
     # 检测主网络接口
-    MAIN_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n 1)
     if [[ -z "$MAIN_INTERFACE" ]]; then
-        echo -e "${RED}错误: 无法检测到默认网络接口${PLAIN}"
-        exit 1
+        # 获取默认路由的网络接口
+        MAIN_INTERFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
+        
+        # 如果还是为空，尝试其他方法
+        if [[ -z "$MAIN_INTERFACE" ]]; then
+            # 尝试从IP地址获取
+            MAIN_INTERFACE=$(ip -o -4 addr | grep -v "127.0.0.1" | awk '{print $2}' | head -n1)
+            
+            # 如果还是为空，使用eth0作为默认
+            if [[ -z "$MAIN_INTERFACE" ]]; then
+                MAIN_INTERFACE="eth0"
+                echo -e "${YELLOW}警告: 无法检测到默认网络接口，使用eth0作为默认值${PLAIN}"
+            fi
+        fi
     fi
     
-    # 获取当前IP和网段
-    CURRENT_IP=$(ip -4 addr show $MAIN_INTERFACE | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
-    if [[ -z "$CURRENT_IP" ]]; then
+    if ! ip link show dev "$MAIN_INTERFACE" &>/dev/null; then
+        echo -e "${RED}错误: 网络接口 $MAIN_INTERFACE 不存在${PLAIN}"
+        read -p "请输入正确的网络接口名称: " MAIN_INTERFACE
+        if ! ip link show dev "$MAIN_INTERFACE" &>/dev/null; then
+            echo -e "${RED}错误: 网络接口 $MAIN_INTERFACE 不存在，退出安装${PLAIN}"
+            exit 1
+        fi
+    fi
+    
+    # 获取接口IP地址
+    INTERFACE_IP=$(ip -o -4 addr show dev "$MAIN_INTERFACE" | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    if [[ -z "$INTERFACE_IP" ]]; then
         echo -e "${RED}错误: 无法获取网络接口 $MAIN_INTERFACE 的IP地址${PLAIN}"
         exit 1
     fi
     
-    GATEWAY=$(ip route | grep default | awk '{print $3}' | head -n 1)
-    SUBNET_PREFIX=$(echo $CURRENT_IP | cut -d '.' -f 1,2,3)
+    # 检测局域网网段
+    local ip_parts=(${INTERFACE_IP//./ })
+    local subnet_prefix="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}"
     
-    echo -e "${GREEN}检测到网络接口: $MAIN_INTERFACE${PLAIN}"
-    echo -e "${GREEN}当前IP地址: $CURRENT_IP${PLAIN}"
-    echo -e "${GREEN}网关地址: $GATEWAY${PLAIN}"
-    echo -e "${GREEN}网段前缀: $SUBNET_PREFIX.x${PLAIN}"
+    # 仅显示基本网络信息
+    echo -e "${GREEN}网络接口: ${CYAN}$MAIN_INTERFACE${PLAIN}"
+    echo -e "${GREEN}接口IP地址: ${CYAN}$INTERFACE_IP${PLAIN}"
 }
 
 # 初始化状态文件
@@ -328,21 +343,19 @@ init_state_file() {
     
     if [[ ! -f "$STATE_FILE" ]]; then
         # 如果没有获取到网络信息，尝试再次检测
-        if [[ -z "$MAIN_INTERFACE" || -z "$CURRENT_IP" ]]; then
+        if [[ -z "$MAIN_INTERFACE" || -z "$INTERFACE_IP" ]]; then
             detect_network
         fi
         
         # 确保网络变量已设置
         MAIN_INTERFACE=${MAIN_INTERFACE:-$(ip route | grep default | awk '{print $5}' | head -n 1)}
-        SUBNET_PREFIX=$(echo $CURRENT_IP | cut -d '.' -f 1,2,3)
-        MIHOMO_IP="${SUBNET_PREFIX}.4"
-        INTERFACE_IP="${SUBNET_PREFIX}.5"
+        INTERFACE_IP=$(ip -o -4 addr show dev "$MAIN_INTERFACE" | awk '{print $4}' | cut -d/ -f1 | head -n1)
         
         # 创建新的状态文件
         cat > "$STATE_FILE" << EOF
 {
   "version": "$STATE_VERSION",
-  "mihomo_ip": "$MIHOMO_IP",
+  "mihomo_ip": "$INTERFACE_IP",
   "interface_ip": "$INTERFACE_IP",
   "main_interface": "$MAIN_INTERFACE",
   "macvlan_interface": "mihomo_veth",
@@ -353,7 +366,7 @@ init_state_file() {
 }
 EOF
         log_message "创建本地状态文件: $STATE_FILE"
-        echo -e "${GREEN}已创建状态文件，默认Mihomo IP: $MIHOMO_IP${PLAIN}"
+        echo -e "${GREEN}已创建状态文件，默认Mihomo IP: $INTERFACE_IP${PLAIN}"
     else
         log_message "使用现有状态文件"
         echo -e "${GREEN}使用现有状态文件${PLAIN}"
@@ -367,93 +380,36 @@ EOF
     return 0
 }
 
-# 从状态文件读取值
+# 获取状态值
 get_state_value() {
-    local key=$1
+    local key="$1"
+    local value=""
+    
+    # 检查状态文件是否存在
     if [[ ! -f "$STATE_FILE" ]]; then
-        echo "" 
-        return 1 # File doesn't exist
+        return
     fi
-    local value
-    value=$(jq -r --arg key_jq "$key" '.[$key_jq] // ""' "$STATE_FILE" 2>/dev/null)
-    # Check jq's exit status.
-    if [[ $? -ne 0 ]]; then
-        echo -e "${YELLOW}警告: 无法从状态文件 $STATE_FILE 中使用jq读取 '$key'。${PLAIN}" >&2
-        # Fallback to grep for basic cases
-        value=$(grep -o "\"$key\": *\"[^\"]*\"" "$STATE_FILE" | sed -E 's/.*"[^"]+":[[:space:]]*"([^"]*)".*/\1/')
-        echo "$value"
-    else
-        echo "$value"
-    fi
+    
+    value=$(grep -o "\"$key\": *\"[^\"]*\"" "$STATE_FILE" | cut -d'"' -f4)
+    echo "$value"
 }
 
-# 更新状态文件中的值
+# 更新状态
 update_state() {
-    local key=$1
-    local value=$2
+    local key="$1"
+    local value="$2"
     
-    # 如果状态文件不存在，创建它
+    # 检查状态文件是否存在
     if [[ ! -f "$STATE_FILE" ]]; then
-        echo -e "${YELLOW}状态文件不存在，创建新的状态文件...${PLAIN}"
-        # 确保目录存在
-        mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
-        # 创建基本状态文件
-        cat > "$STATE_FILE" << EOF
-{
-  "version": "$STATE_VERSION",
-  "mihomo_ip": "",
-  "interface_ip": "",
-  "main_interface": "$MAIN_INTERFACE",
-  "macvlan_interface": "mihomo_veth",
-  "installation_stage": "初始化",
-  "config_type": "",
-  "docker_method": "direct_pull",
-  "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
-}
-EOF
-        echo -e "${GREEN}已创建新的状态文件: $STATE_FILE${PLAIN}"
-        chmod 644 "$STATE_FILE"
+        echo -e "${YELLOW}警告: 状态文件不存在，无法更新状态${PLAIN}"
+        return 1
     fi
     
-    # 获取当前值，如果相同则不更新
-    local current_value=$(get_state_value "$key")
-    if [[ "$current_value" == "$value" ]]; then
-        # 值相同，不需要更新
-        return 0
-    fi
+    # 使用sed更新状态值
+    sed -i "s|\"$key\": *\"[^\"]*\"|\"$key\": \"$value\"|g" "$STATE_FILE"
     
-    # 备份当前状态
-    backup_state
-    
-    # 使用 jq 更新状态
-    echo -e "${CYAN}更新状态 $key = $value${PLAIN}"
-    if ! command -v jq &> /dev/null; then
-        echo -e "${YELLOW}警告: 未安装jq，使用临时方法更新状态${PLAIN}"
-        # 如果没有jq，使用临时替代方法
-        sed -i "s/\"$key\": *\"[^\"]*\"/\"$key\": \"$value\"/" "$STATE_FILE"
-        if [[ $? -ne 0 ]]; then
-            echo -e "${RED}状态更新失败: $key = $value${PLAIN}"
-            return 1
-        fi
-    else
-        # 使用jq更新
-        jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$STATE_FILE" > "${STATE_FILE}.tmp"
-        if [[ $? -eq 0 ]]; then
-            mv "${STATE_FILE}.tmp" "$STATE_FILE"
-        else
-            echo -e "${RED}状态更新失败: $key = $value${PLAIN}"
-            restore_state "${STATE_FILE}.bak.$(date '+%Y%m%d%H%M%S')"
-            return 1
-        fi
-    fi
-    
-    # 只有对重要的状态变更才记录日志
-    if [[ "$key" == "mihomo_ip" || "$key" == "installation_stage" ]]; then
-        log_message "INFO: 更新状态: $key = $value"
-        echo -e "${GREEN}已更新状态: $key = $value${PLAIN}"
-    fi
-    
-    return 0
+    # 更新时间戳
+    sed -i "s|\"timestamp\": *\"[^\"]*\"|\"timestamp\": \"$(date '+%Y-%m-%d %H:%M:%S')\"|g" "$STATE_FILE"
 }
 
 # 查找可用的IP地址
@@ -491,79 +447,70 @@ find_available_ip() {
     return 1
 }
 
-# 交互式设置mihomo IP
+# 设置Mihomo IP
 setup_mihomo_ip() {
-    local stored_ip=$(get_state_value "mihomo_ip")
-    local previous_interface_ip=$(get_state_value "interface_ip")
+    # 确定默认的网络接口
+    local interface_ip=""
     
-    if [[ -n "$stored_ip" ]]; then
-        read -p "检测到之前配置的mihomo IP: $stored_ip, 是否使用此IP? (y/n): " use_stored
-        if [[ "$use_stored" == "y" || "$use_stored" == "Y" ]]; then
-            MIHOMO_IP=$stored_ip
-            return 0
+    # 如果网络接口已检测
+    if [[ -n "$MAIN_INTERFACE" ]]; then
+        interface_ip=$(ip -o -4 addr show dev "$MAIN_INTERFACE" | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    else
+        # 重新进行网络检测
+        detect_network
+        interface_ip="$INTERFACE_IP"
+    fi
+    
+    # 将IP拆分为段
+    local ip_parts=(${interface_ip//./ })
+    local subnet_prefix="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}"
+    
+    # 建议的IP地址
+    local suggested_ip="${subnet_prefix}.4"
+    
+    # 显示当前检测到的网络信息
+    echo -e "${CYAN}当前网络信息:${PLAIN}"
+    echo -e "${YELLOW}• 网络接口: ${GREEN}$MAIN_INTERFACE${PLAIN}"
+    echo -e "${YELLOW}• 接口IP地址: ${GREEN}$interface_ip${PLAIN}"
+    echo -e "${YELLOW}• 默认子网: ${GREEN}${subnet_prefix}.0/24${PLAIN}"
+    echo
+    
+    # 提示用户设置IP
+    echo -e "${CYAN}请为Mihomo设置一个静态IP地址:${PLAIN}"
+    echo -e "${YELLOW}推荐使用子网内未使用的IP: ${GREEN}${suggested_ip}${PLAIN}"
+    echo -e "${YELLOW}注意: IP地址必须与您当前设备在同一子网内${PLAIN}"
+    echo -e "${YELLOW}建议使用${subnet_prefix}.X形式的地址 (X为2-254之间的数字)${PLAIN}"
+    
+    # 用户输入
+    local mihomo_ip=""
+    read -p "请输入Mihomo IP地址 [$suggested_ip]: " mihomo_ip
+    mihomo_ip=${mihomo_ip:-$suggested_ip}
+    
+    # 验证IP格式
+    if ! [[ $mihomo_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}IP地址格式不正确${PLAIN}"
+        read -p "重新输入IP地址: " mihomo_ip
+        if ! [[ $mihomo_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo -e "${RED}IP地址格式不正确，使用默认值${PLAIN}"
+            mihomo_ip="$suggested_ip"
         fi
     fi
     
-    # 自动检测合适的IP
-    local suggested_ip="${SUBNET_PREFIX}.4"
-    if ping -c 1 -W 1 "$suggested_ip" &> /dev/null; then
-        # 如果默认IP已使用，寻找可用IP
-        for i in {5..20}; do
-            local check_ip="${SUBNET_PREFIX}.$i"
-            if ! ping -c 1 -W 1 "$check_ip" &> /dev/null; then
-                suggested_ip=$check_ip
-                break
-            fi
-        done
+    # 检查IP是否已被占用
+    if ping -c 1 -W 1 "$mihomo_ip" &>/dev/null; then
+        echo -e "${YELLOW}警告: IP地址 $mihomo_ip 可能已被占用${PLAIN}"
+        read -p "是否继续使用此IP? (y/n): " continue_ip
+        if [[ "$continue_ip" != "y" && "$continue_ip" != "Y" ]]; then
+            setup_mihomo_ip
+            return
+        fi
     fi
     
-    echo -e "${CYAN}请为mihomo选择一个IP地址${PLAIN}"
-    echo -e "${CYAN}此IP必须与您的局域网在同一网段，并且不能与现有设备冲突${PLAIN}"
-    echo -e "${CYAN}建议使用: ${suggested_ip}${PLAIN}"
-    
-    read -p "请输入mihomo的IP地址 [默认: ${suggested_ip}]: " MIHOMO_IP
-    MIHOMO_IP=${MIHOMO_IP:-$suggested_ip}
-    
-    # 验证IP格式
-    if ! [[ $MIHOMO_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "${RED}错误: 无效的IP地址格式${PLAIN}"
-        setup_mihomo_ip
-        return
-    fi
-    
-    # 检查IP是否已被使用
-    if ping -c 1 -W 1 "$MIHOMO_IP" &> /dev/null; then
-        echo -e "${RED}错误: IP地址 $MIHOMO_IP 已被使用${PLAIN}"
-        setup_mihomo_ip
-        return
-    fi
-    
-    # 确保状态文件存在
-    if [[ ! -f "$STATE_FILE" ]]; then
-        echo -e "${YELLOW}状态文件不存在，初始化状态文件...${PLAIN}"
-        init_state_file
-    fi
-    
-    # 设置接口IP (mihomo IP + 1)
-    local ip_parts=(${MIHOMO_IP//./ })
-    local last_octet=$((ip_parts[3] + 1))
-    INTERFACE_IP="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}.$last_octet"
-    
-    # 验证接口IP是否可用
-    if ping -c 1 -W 1 "$INTERFACE_IP" &> /dev/null; then
-        echo -e "${RED}错误: 计算得出的接口IP ($INTERFACE_IP) 已被占用。请重新设置Mihomo IP。${PLAIN}"
-        setup_mihomo_ip
-        return
-    fi
-    
-    # 仅当IP实际更改时才显示更新信息
-    if [[ "$MIHOMO_IP" != "$stored_ip" ]]; then
-        echo -e "${GREEN}将使用 $MIHOMO_IP 作为mihomo的IP地址${PLAIN}"
-        update_state "mihomo_ip" "$MIHOMO_IP"
-        update_state "interface_ip" "$INTERFACE_IP"
-        update_state "main_interface" "$MAIN_INTERFACE"
-        update_state "macvlan_interface" "mihomo_veth"
-        echo -e "${GREEN}IP配置已更新${PLAIN}"
+    # 更新状态文件
+    if update_state "mihomo_ip" "$mihomo_ip"; then
+        echo -e "${GREEN}Mihomo IP地址已设置为: $mihomo_ip${PLAIN}"
+    else
+        echo -e "${RED}设置IP地址失败${PLAIN}"
     fi
 }
 
@@ -575,7 +522,7 @@ check_config_template() {
         # 尝试在不同位置寻找配置文件
         local config_locations=(
             "$FILES_DIR/config.yaml"
-            "$SCRIPT_DIR/config.yaml"
+            "$script_dir/config.yaml"
             "$HOME/mihomo-proxy/config.yaml"
         )
         
@@ -607,9 +554,17 @@ check_config_template() {
 show_step_menu() {
     clear
     
-    # 获取当前状态
-    local mihomo_ip=$(get_state_value "mihomo_ip")
-    local stage=$(get_state_value "installation_stage")
+    # 获取当前状态（如果状态文件存在）
+    local mihomo_ip=""
+    local stage=""
+    
+    if [[ -f "$STATE_FILE" ]]; then
+        mihomo_ip=$(get_state_value "mihomo_ip")
+        stage=$(get_state_value "installation_stage")
+    else
+        # 如果状态文件不存在，则视为未初始化
+        stage="未初始化"
+    fi
     
     # 标题
     echo -e "${CYAN}===========================================================${PLAIN}"
@@ -685,10 +640,16 @@ show_step_menu() {
 show_menu() {
     clear
     
-    # 获取当前状态
-    local mihomo_ip=$(get_state_value "mihomo_ip")
-    local stage=$(get_state_value "installation_stage")
-    local timestamp=$(get_state_value "timestamp")
+    # 获取当前状态（如果状态文件存在）
+    local mihomo_ip=""
+    local stage=""
+    local timestamp=""
+    
+    if [[ -f "$STATE_FILE" ]]; then
+        mihomo_ip=$(get_state_value "mihomo_ip")
+        stage=$(get_state_value "installation_stage")
+        timestamp=$(get_state_value "timestamp")
+    fi
     
     # 标题
     echo -e "${CYAN}===========================================================${PLAIN}"
@@ -706,7 +667,7 @@ show_menu() {
     echo -e " ${GREEN}[0] 0. 退出脚本${PLAIN}"
     echo -e "${CYAN}===========================================================${PLAIN}"
     
-    # 显示当前状态
+    # 显示当前状态（如果有）
     if [[ -n "$mihomo_ip" ]]; then
         echo -e "${YELLOW}系统信息:${PLAIN}"
         echo -e "${YELLOW}• Mihomo IP: ${GREEN}$mihomo_ip${PLAIN}"
@@ -771,7 +732,36 @@ init_setup() {
     echo -e "${YELLOW}这一步将设置mihomo的IP地址并检查配置脚本${PLAIN}"
     echo
     
-    local mihomo_ip=$(get_state_value "mihomo_ip")
+    # 检查状态文件是否已存在
+    local mihomo_ip=""
+    if [[ -f "$STATE_FILE" ]]; then
+        mihomo_ip=$(get_state_value "mihomo_ip")
+    else
+        # 如果状态文件不存在，创建一个初始的空状态文件
+        echo -e "${CYAN}创建初始状态文件...${PLAIN}"
+        # 确保files目录存在
+        if [[ ! -d "$FILES_DIR" ]]; then
+            mkdir -p "$FILES_DIR"
+        fi
+        
+        # 创建基本状态文件
+        cat > "$STATE_FILE" << EOF
+{
+  "version": "$STATE_VERSION",
+  "mihomo_ip": "",
+  "interface_ip": "",
+  "main_interface": "$MAIN_INTERFACE",
+  "macvlan_interface": "mihomo_veth",
+  "installation_stage": "初始化",
+  "config_type": "preset",
+  "docker_method": "direct_pull",
+  "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+        chmod 644 "$STATE_FILE"
+        echo -e "${GREEN}初始状态文件已创建${PLAIN}"
+    fi
+    
     if [[ -n "$mihomo_ip" ]]; then
         echo -e "${YELLOW}检测到已有配置: IP = $mihomo_ip${PLAIN}"
         read -p "是否重新设置IP地址? (y/n): " reset_ip
@@ -798,6 +788,10 @@ init_setup() {
         echo -e "${GREEN}所有执行脚本已就绪${PLAIN}"
     fi
     
+    # 检查配置文件模板是否存在
+    check_config_template
+    
+    # 获取设置完成后的mihomo IP
     mihomo_ip=$(get_state_value "mihomo_ip")
     echo -e "\n${GREEN}======================================================${PLAIN}"
     echo -e "${GREEN}步骤1完成! Mihomo IP地址: ${YELLOW}$mihomo_ip${PLAIN}"
@@ -813,8 +807,14 @@ init_setup() {
 
 # 配置代理机
 setup_proxy() {
-    local mihomo_ip=$(get_state_value "mihomo_ip")
-    local stage=$(get_state_value "installation_stage")
+    # 检查状态文件是否存在
+    local mihomo_ip=""
+    local stage=""
+    
+    if [[ -f "$STATE_FILE" ]]; then
+        mihomo_ip=$(get_state_value "mihomo_ip")
+        stage=$(get_state_value "installation_stage")
+    fi
     
     # 检查是否已完成初始化
     if [[ -z "$mihomo_ip" ]]; then
@@ -844,7 +844,7 @@ setup_proxy() {
         bash "$PROXY_SCRIPT"
         
         # 检查是否使用了预设配置
-        if [[ "$(get_state_value "config_type")" == "preset" ]]; then
+        if [[ -f "$STATE_FILE" ]] && [[ "$(get_state_value "config_type")" == "preset" ]]; then
             echo -e "\n${YELLOW}======================================================${PLAIN}"
             echo -e "${YELLOW}重要提示${PLAIN}"
             echo -e "${YELLOW}======================================================${PLAIN}"
@@ -886,6 +886,7 @@ one_key_install() {
     
     # 1. 初始化设置
     echo -e "${CYAN}[2/5] 初始化配置...${PLAIN}"
+    # 这里首先检测网络并初始化状态文件
     detect_network
     init_state_file
     
@@ -946,139 +947,240 @@ check_installation_status() {
     echo -e "${CYAN}              安装状态检查${PLAIN}"
     echo -e "${CYAN}======================================================${PLAIN}"
     
-    # 检查状态脚本是否存在
-    if [[ -f "$CHECK_SCRIPT" ]]; then
-        echo -e "${CYAN}正在执行状态检查...${PLAIN}"
-        bash "$CHECK_SCRIPT"
+    # 检查状态文件是否存在
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo -e "${YELLOW}未检测到安装状态。目前尚未初始化安装。${PLAIN}"
+        echo -e "${YELLOW}请先运行初始化安装。${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    # 系统信息
+    local system_info=$(cat /etc/os-release | grep "PRETTY_NAME" | cut -d'"' -f2)
+    local kernel_info=$(uname -r)
+    echo -e "${CYAN}系统信息:${PLAIN}"
+    echo -e "${YELLOW}• 系统: ${GREEN}$system_info${PLAIN}"
+    echo -e "${YELLOW}• 内核: ${GREEN}$kernel_info${PLAIN}"
+    echo
+    
+    # Mihomo配置信息
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    local stage=$(get_state_value "installation_stage")
+    local timestamp=$(get_state_value "timestamp")
+    
+    echo -e "${CYAN}Mihomo配置:${PLAIN}"
+    echo -e "${YELLOW}• Mihomo IP: ${GREEN}$mihomo_ip${PLAIN}"
+    echo -e "${YELLOW}• 安装阶段: ${GREEN}$stage${PLAIN}"
+    echo -e "${YELLOW}• 更新时间: ${GREEN}$timestamp${PLAIN}"
+    
+    # 检查服务运行状态
+    echo
+    echo -e "${CYAN}服务状态:${PLAIN}"
+    
+    # 检查Docker运行状态
+    if command -v docker &> /dev/null; then
+        if systemctl is-active --quiet docker; then
+            echo -e "${YELLOW}• Docker服务: ${GREEN}运行中${PLAIN}"
+        else
+            echo -e "${YELLOW}• Docker服务: ${RED}未运行${PLAIN}"
+        fi
     else
-        echo -e "${RED}错误: 状态检查脚本不存在: $CHECK_SCRIPT${PLAIN}"
-        echo -e "${YELLOW}为您显示基本信息:${PLAIN}"
-        
-        if [[ -f "$STATE_FILE" ]]; then
-            echo -e "${YELLOW}基本系统信息:${PLAIN}"
-            local mihomo_ip=$(get_state_value "mihomo_ip")
-            local stage=$(get_state_value "installation_stage")
-            
-            echo -e "${YELLOW}● 步骤完成情况:${PLAIN}"
-            if [[ -n "$mihomo_ip" ]]; then
-                echo -e "${GREEN}  ✓ 步骤1: 初始化已完成 - IP: $mihomo_ip${PLAIN}"
+        echo -e "${YELLOW}• Docker服务: ${RED}未安装${PLAIN}"
+    fi
+    
+    # 检查Mihomo容器状态
+    if command -v docker &> /dev/null; then
+        local container_status=$(docker ps -a --filter "name=mihomo" --format "{{.Status}}")
+        if [[ -n "$container_status" ]]; then
+            if [[ "$container_status" == *"Up"* ]]; then
+                echo -e "${YELLOW}• Mihomo容器: ${GREEN}运行中${PLAIN}"
+                echo -e "${YELLOW}• 状态详情: ${GREEN}$container_status${PLAIN}"
+                
+                # 如果容器正在运行，显示可用端口
+                echo
+                echo -e "${CYAN}代理端口:${PLAIN}"
+                echo -e "${YELLOW}• 控制面板: ${GREEN}http://$mihomo_ip:9090/ui${PLAIN}"
+                echo -e "${YELLOW}• HTTP代理: ${GREEN}$mihomo_ip:7891${PLAIN}"
+                echo -e "${YELLOW}• SOCKS代理: ${GREEN}$mihomo_ip:7892${PLAIN}"
             else
-                echo -e "${RED}  ✗ 步骤1: 初始化未完成${PLAIN}"
-            fi
-            
-            if [[ "$stage" == "Step2_Completed" ]]; then
-                echo -e "${GREEN}  ✓ 步骤2: 代理机配置已完成${PLAIN}"
-            else
-                echo -e "${RED}  ✗ 步骤2: 代理机配置未完成${PLAIN}"
-            fi
-            
-            if [[ -n "$mihomo_ip" && "$stage" == "Step2_Completed" ]]; then
-                echo -e "${YELLOW}● 访问信息:${PLAIN}"
-                echo -e "${GREEN}  控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
-                echo -e "${GREEN}  HTTP代理: $mihomo_ip:7891${PLAIN}"
-                echo -e "${GREEN}  SOCKS5代理: $mihomo_ip:7892${PLAIN}"
-                echo -e "${GREEN}  混合端口: $mihomo_ip:7890${PLAIN}"
+                echo -e "${YELLOW}• Mihomo容器: ${RED}已停止${PLAIN}"
+                echo -e "${YELLOW}• 状态详情: ${YELLOW}$container_status${PLAIN}"
             fi
         else
-            echo -e "${RED}错误: 未找到状态文件${PLAIN}"
-            echo -e "${YELLOW}建议重新执行步骤1进行初始化${PLAIN}"
+            echo -e "${YELLOW}• Mihomo容器: ${RED}未创建${PLAIN}"
+        fi
+    fi
+    
+    # 检查网络配置
+    echo
+    echo -e "${CYAN}网络配置:${PLAIN}"
+    local macvlan_interface=$(get_state_value "macvlan_interface")
+    
+    # 检查主接口
+    if ip link show dev $MAIN_INTERFACE &>/dev/null; then
+        echo -e "${YELLOW}• 主接口: ${GREEN}$MAIN_INTERFACE - 已识别${PLAIN}"
+    else
+        echo -e "${YELLOW}• 主接口: ${RED}$MAIN_INTERFACE - 未找到${PLAIN}"
+    fi
+    
+    # 检查macvlan接口
+    if [[ -n "$macvlan_interface" ]]; then
+        if ip link show dev $macvlan_interface &>/dev/null; then
+            echo -e "${YELLOW}• macvlan接口: ${GREEN}$macvlan_interface - 已创建${PLAIN}"
+        else
+            echo -e "${YELLOW}• macvlan接口: ${RED}$macvlan_interface - 未找到${PLAIN}"
         fi
     fi
     
     echo -e "${CYAN}======================================================${PLAIN}"
+    
+    # 根据安装状态给出建议
+    echo
+    echo -e "${CYAN}建议操作:${PLAIN}"
+    if [[ "$stage" == "Step2_Completed" ]]; then
+        if [[ $(docker ps -q -f name=mihomo) ]]; then
+            echo -e "${GREEN}• Mihomo正常运行中，可以使用代理服务${PLAIN}"
+            echo -e "${GREEN}• 您可以通过控制面板管理Mihomo: http://$mihomo_ip:9090/ui${PLAIN}"
+        else
+            echo -e "${YELLOW}• Mihomo容器未运行，建议重启服务${PLAIN}"
+            echo -e "${YELLOW}• 返回主菜单选择'重启服务'选项${PLAIN}"
+        fi
+    else
+        echo -e "${YELLOW}• 您的安装尚未完成，建议完成完整安装${PLAIN}"
+        echo -e "${YELLOW}• 返回主菜单选择'一键安装'或'分步安装'选项${PLAIN}"
+    fi
+    
+    echo
     read -p "按任意键返回主菜单..." key
     show_menu
 }
 
-# 重启Mihomo服务
+# 重启mihomo服务
 restart_mihomo_service() {
     clear
     echo -e "${CYAN}======================================================${PLAIN}"
     echo -e "${CYAN}              重启Mihomo服务${PLAIN}"
     echo -e "${CYAN}======================================================${PLAIN}"
     
-    # 检查Docker服务是否运行
-    if ! systemctl is-active --quiet docker; then
-        echo -e "${RED}错误: Docker服务未运行${PLAIN}"
-        echo -e "${YELLOW}正在启动Docker服务...${PLAIN}"
-        systemctl start docker
-        if ! systemctl is-active --quiet docker; then
-            echo -e "${RED}Docker服务启动失败${PLAIN}"
-            echo -e "${YELLOW}请检查Docker服务状态并尝试手动启动${PLAIN}"
-            read -p "按任意键返回..." key
-            show_menu
-            return
-        fi
-        echo -e "${GREEN}Docker服务已成功启动${PLAIN}"
-    fi
-    
-    # 检查mihomo容器状态
-    if ! docker ps -a | grep -q mihomo; then
-        echo -e "${RED}错误: 未找到mihomo容器${PLAIN}"
-        echo -e "${YELLOW}可能的原因:${PLAIN}"
-        echo -e "1. 尚未完成安装"
-        echo -e "2. 容器已被删除"
-        echo -e "3. 容器名称不是'mihomo'"
-        echo
-        echo -e "${CYAN}建议操作:${PLAIN}"
-        echo -e "1. 完成安装"
-        echo -e "2. 检查Docker容器状态: docker ps -a"
-        echo -e "3. 如果需要，手动启动容器"
-        read -p "按任意键返回..." key
+    # 检查状态文件是否存在
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo -e "${YELLOW}未检测到Mihomo安装状态，请先完成安装。${PLAIN}"
+        read -p "按任意键返回主菜单..." key
         show_menu
         return
     fi
     
-    # 检查容器是否正在运行
-    if ! docker ps | grep -q mihomo; then
-        echo -e "${YELLOW}警告: mihomo容器未运行${PLAIN}"
-        echo -e "${CYAN}正在启动服务...${PLAIN}"
-        if ! docker start mihomo; then
-            echo -e "${RED}启动失败${PLAIN}"
-            echo -e "${YELLOW}请检查Docker日志:${PLAIN}"
-            docker logs mihomo --tail 20
-            read -p "按任意键返回..." key
-            show_menu
-            return
-        fi
-        echo -e "${GREEN}服务已成功启动${PLAIN}"
-    else
-        echo -e "${CYAN}正在重启服务...${PLAIN}"
-        if ! docker restart mihomo; then
-            echo -e "${RED}重启失败${PLAIN}"
-            echo -e "${YELLOW}请检查Docker日志:${PLAIN}"
-            docker logs mihomo --tail 20
-            read -p "按任意键返回..." key
-            show_menu
-            return
-        fi
-        echo -e "${GREEN}服务已成功重启${PLAIN}"
+    # 检查docker是否已安装
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Docker未安装，无法重启Mihomo服务${PLAIN}"
+        echo -e "${YELLOW}请先完成Mihomo的安装${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
     fi
     
-    # 验证服务状态
-    if docker ps | grep -q mihomo; then
-        echo -e "${GREEN}● 容器状态: 运行中${PLAIN}"
-        
-        # 获取mihomo IP
-        local mihomo_ip=$(get_state_value "mihomo_ip")
-        echo -e "${CYAN}服务信息:${PLAIN}"
-        echo -e "${GREEN}● 控制面板地址: http://${mihomo_ip}:9090/ui${PLAIN}"
-        echo -e "${GREEN}● 混合代理端口: ${mihomo_ip}:7890${PLAIN}"
-        echo -e "${GREEN}● HTTP代理端口: ${mihomo_ip}:7891${PLAIN}"
-        echo -e "${GREEN}● SOCKS5代理端口: ${mihomo_ip}:7892${PLAIN}"
-        
-        # 检查服务是否可访问
-        if curl -s -m 3 http://${mihomo_ip}:9090 &> /dev/null; then
-            echo -e "${GREEN}● 服务可访问性: 正常${PLAIN}"
+    # 重启mihomo容器
+    echo -e "${CYAN}正在重启Mihomo容器...${PLAIN}"
+    
+    # 获取mihomo IP和接口信息
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    local stage=$(get_state_value "installation_stage")
+    
+    if [[ -z "$mihomo_ip" || "$stage" != "Step2_Completed" ]]; then
+        echo -e "${YELLOW}警告: Mihomo似乎未完成安装。${PLAIN}"
+        read -p "是否仍要尝试重启服务? (y/n): " continue_restart
+        if [[ "$continue_restart" != "y" && "$continue_restart" != "Y" ]]; then
+            show_menu
+            return
+        fi
+    fi
+    
+    # 停止并删除已存在的容器
+    docker stop mihomo 2>/dev/null
+    docker rm mihomo 2>/dev/null
+    
+    # 重新启动代理配置
+    if [[ -f "$PROXY_SCRIPT" ]]; then
+        echo -e "${CYAN}正在重新启动Mihomo容器...${PLAIN}"
+        if bash "$PROXY_SCRIPT" restart; then
+            echo -e "${GREEN}Mihomo服务已成功重启!${PLAIN}"
+            if [[ -n "$mihomo_ip" ]]; then
+                echo -e "\n${GREEN}======================================================${PLAIN}"
+                echo -e "${GREEN}访问信息:${PLAIN}"
+                echo -e "${GREEN}• 控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
+                echo -e "${GREEN}• HTTP代理: $mihomo_ip:7891${PLAIN}"
+                echo -e "${GREEN}• SOCKS代理: $mihomo_ip:7892${PLAIN}"
+                echo -e "${GREEN}• 混合代理: $mihomo_ip:7890${PLAIN}"
+                echo -e "${GREEN}======================================================${PLAIN}"
+            fi
         else
-            echo -e "${YELLOW}● 服务可访问性: 无法访问${PLAIN}"
-            echo -e "${YELLOW}请检查网络配置和防火墙设置，确保服务可访问${PLAIN}"
+            echo -e "${RED}重启Mihomo服务失败${PLAIN}"
         fi
     else
-        echo -e "${RED}● 容器状态: 未运行${PLAIN}"
-        echo -e "${YELLOW}请检查Docker日志以了解问题原因${PLAIN}"
-        docker logs mihomo --tail 20
+        echo -e "${RED}错误: 代理配置脚本不存在 ($PROXY_SCRIPT)${PLAIN}"
+        echo -e "${YELLOW}请确保安装文件完整${PLAIN}"
     fi
+    
+    read -p "按任意键返回主菜单..." key
+    show_menu
+}
+
+# 卸载mihomo
+uninstall_mihomo() {
+    clear
+    echo -e "${CYAN}======================================================${PLAIN}"
+    echo -e "${RED}              卸载Mihomo${PLAIN}"
+    echo -e "${CYAN}======================================================${PLAIN}"
+    
+    echo -e "${YELLOW}警告: 此操作将完全卸载Mihomo及其配置${PLAIN}"
+    echo -e "${YELLOW}包括：${PLAIN}"
+    echo -e "${YELLOW}• 删除Mihomo容器${PLAIN}"
+    echo -e "${YELLOW}• 删除网络配置${PLAIN}"
+    echo -e "${YELLOW}• 删除配置文件${PLAIN}"
+    echo
+    
+    read -p "是否确认卸载? (y/n): " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "${GREEN}已取消卸载操作${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    echo -e "${CYAN}开始卸载Mihomo...${PLAIN}"
+    
+    # 1. 停止和删除Docker容器
+    if command -v docker &> /dev/null; then
+        echo -e "${CYAN}正在停止并删除Mihomo容器...${PLAIN}"
+        docker stop mihomo 2>/dev/null
+        docker rm mihomo 2>/dev/null
+        echo -e "${GREEN}Mihomo容器已删除${PLAIN}"
+    fi
+    
+    # 2. 删除网络配置
+    local macvlan_interface="mihomo_veth"
+    if [[ -f "$STATE_FILE" ]]; then
+        macvlan_interface=$(get_state_value "macvlan_interface")
+    fi
+    
+    echo -e "${CYAN}正在删除网络配置...${PLAIN}"
+    if ip link show $macvlan_interface &>/dev/null; then
+        ip link delete $macvlan_interface 2>/dev/null
+        echo -e "${GREEN}已删除macvlan接口: $macvlan_interface${PLAIN}"
+    fi
+    
+    # 3. 删除配置文件
+    echo -e "${CYAN}正在删除配置文件...${PLAIN}"
+    rm -rf /etc/mihomo 2>/dev/null
+    if [[ -f "$STATE_FILE" ]]; then
+        rm -f "$STATE_FILE" 2>/dev/null
+        echo -e "${GREEN}已删除状态文件: $STATE_FILE${PLAIN}"
+    fi
+    
+    echo -e "\n${GREEN}======================================================${PLAIN}"
+    echo -e "${GREEN}Mihomo卸载完成!${PLAIN}"
+    echo -e "${GREEN}======================================================${PLAIN}"
     
     read -p "按任意键返回主菜单..." key
     show_menu
@@ -1086,34 +1188,28 @@ restart_mihomo_service() {
 
 # 配置路由器
 configure_router() {
-    local mihomo_ip=$(get_state_value "mihomo_ip")
-    local stage=$(get_state_value "installation_stage")
+    # 检查状态文件是否存在
+    local mihomo_ip=""
+    local stage=""
     
-    # 检查是否已完成初始化
-    if [[ -z "$mihomo_ip" ]]; then
-        echo -e "${YELLOW}======================================================${PLAIN}"
-        echo -e "${YELLOW}您需要先完成步骤1: 初始化设置${PLAIN}"
-        echo -e "${YELLOW}======================================================${PLAIN}"
-        read -p "是否立即进行初始化? (y/n): " do_init
-        if [[ "$do_init" == "y" || "$do_init" == "Y" ]]; then
-            init_setup
-            return
-        else
-            show_menu
-            return
-        fi
+    if [[ -f "$STATE_FILE" ]]; then
+        mihomo_ip=$(get_state_value "mihomo_ip")
+        stage=$(get_state_value "installation_stage")
     fi
     
-    # 检查是否已完成代理机配置
-    if [[ "$stage" != "Step2_Completed" ]]; then
-        echo -e "${YELLOW}======================================================${PLAIN}"
-        echo -e "${YELLOW}建议先完成安装${PLAIN}"
-        echo -e "${YELLOW}======================================================${PLAIN}"
-        read -p "是否继续生成路由器配置? (y/n): " continue_router
-        if [[ "$continue_router" != "y" && "$continue_router" != "Y" ]]; then
-            show_menu
-            return
-        fi
+    # 检查是否已配置IP
+    if [[ -z "$mihomo_ip" ]]; then
+        clear
+        echo -e "${CYAN}======================================================${PLAIN}"
+        echo -e "${CYAN}              路由器配置${PLAIN}"
+        echo -e "${CYAN}======================================================${PLAIN}"
+        echo -e "${YELLOW}未检测到Mihomo IP地址配置${PLAIN}"
+        echo -e "${YELLOW}请先完成Mihomo的安装并配置IP地址${PLAIN}"
+        echo -e "${YELLOW}建议选择'分步安装'或'一键安装'选项${PLAIN}"
+        echo -e "${CYAN}======================================================${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
     fi
     
     # 执行路由器配置
@@ -1125,136 +1221,20 @@ configure_router() {
     if [[ -f "$ROUTER_SCRIPT" ]]; then
         echo -e "${CYAN}正在生成路由器配置命令...${PLAIN}"
         bash "$ROUTER_SCRIPT"
-        echo -e "\n${GREEN}======================================================${PLAIN}"
-        echo -e "${GREEN}路由器配置已生成${PLAIN}"
-        echo -e "${GREEN}请按照上方指南配置您的路由器，完成后即可使用Mihomo代理服务${PLAIN}"
-        echo -e "${GREEN}======================================================${PLAIN}"
+        
+        # 检查脚本执行结果
+        if [[ $? -eq 0 ]]; then
+            echo -e "\n${GREEN}======================================================${PLAIN}"
+            echo -e "${GREEN}路由器配置已生成${PLAIN}"
+            echo -e "${GREEN}请按照上方指南配置您的路由器，完成后即可使用Mihomo代理服务${PLAIN}"
+            echo -e "${GREEN}======================================================${PLAIN}"
+        else
+            echo -e "\n${YELLOW}路由器配置生成可能未完成，请检查上方提示信息${PLAIN}"
+        fi
     else
         echo -e "${RED}错误: 路由器配置脚本不存在${PLAIN}"
         echo -e "${YELLOW}请确保脚本文件存在: $ROUTER_SCRIPT${PLAIN}"
     fi
-    
-    read -p "按任意键返回主菜单..." key
-    show_menu
-}
-
-# 卸载Mihomo
-uninstall_mihomo() {
-    clear
-    echo -e "${CYAN}======================================================${PLAIN}"
-    echo -e "${CYAN}              卸载Mihomo服务${PLAIN}"
-    echo -e "${CYAN}======================================================${PLAIN}"
-    
-    echo -e "${YELLOW}警告: 此操作将卸载Mihomo服务并删除所有相关配置${PLAIN}"
-    echo -e "${RED}卸载后将无法恢复，请谨慎操作${PLAIN}"
-    read -p "确定要卸载Mihomo吗? (y/n): " confirm_uninstall
-    
-    if [[ "$confirm_uninstall" != "y" && "$confirm_uninstall" != "Y" ]]; then
-        echo -e "${GREEN}卸载已取消${PLAIN}"
-        read -p "按任意键返回..." key
-        show_menu
-        return
-    fi
-    
-    echo -e "${CYAN}开始卸载Mihomo服务...${PLAIN}"
-    
-    # 1. 停止并删除mihomo容器
-    echo -e "${CYAN}[1/4] 停止并删除mihomo容器${PLAIN}"
-    if docker ps -a | grep -q mihomo; then
-        echo -e "${YELLOW}● 正在停止mihomo容器...${PLAIN}"
-        docker stop mihomo
-        echo -e "${YELLOW}● 正在删除mihomo容器...${PLAIN}"
-        docker rm mihomo
-        if ! docker ps -a | grep -q mihomo; then
-            echo -e "${GREEN}● Mihomo容器已成功删除${PLAIN}"
-        else
-            echo -e "${RED}● Mihomo容器删除失败，请尝试手动删除: ${CYAN}docker rm -f mihomo${PLAIN}"
-        fi
-    else
-        echo -e "${YELLOW}● 未找到Mihomo容器${PLAIN}"
-    fi
-    
-    # 2. 备份并删除配置文件和UI文件
-    echo -e "${CYAN}[2/4] 备份并删除配置文件${PLAIN}"
-    local CONF_DIR="/etc/mihomo"
-    if [[ -d "$CONF_DIR" ]]; then
-        # 备份配置文件
-        local backup_dir="/root/mihomo_backup_$(date '+%Y%m%d%H%M%S')"
-        mkdir -p "$backup_dir"
-        
-        if [[ -f "$CONF_DIR/config.yaml" ]]; then
-            echo -e "${YELLOW}● 备份配置文件到 $backup_dir/config.yaml${PLAIN}"
-            cp "$CONF_DIR/config.yaml" "$backup_dir/config.yaml"
-        fi
-        
-        echo -e "${YELLOW}● 删除配置目录 $CONF_DIR${PLAIN}"
-        rm -rf "$CONF_DIR"
-        echo -e "${GREEN}● 配置目录已删除${PLAIN}"
-    else
-        echo -e "${YELLOW}● 未找到配置目录${PLAIN}"
-    fi
-    
-    # 3. 删除Docker网络
-    echo -e "${CYAN}[3/4] 删除Docker网络${PLAIN}"
-    if docker network ls | grep -q mnet; then
-        echo -e "${YELLOW}● 正在删除Docker macvlan网络...${PLAIN}"
-        # 先确保没有容器连接到该网络
-        docker network disconnect mnet mihomo 2>/dev/null || true
-        # 强制删除网络
-        docker network rm mnet || docker network rm mnet -f
-        if ! docker network ls | grep -q mnet; then
-            echo -e "${GREEN}● Docker macvlan网络已成功删除${PLAIN}"
-        else
-            echo -e "${RED}● Docker macvlan网络删除失败，请尝试手动删除: ${CYAN}docker network rm -f mnet${PLAIN}"
-        fi
-    else
-        echo -e "${YELLOW}● 未找到Docker macvlan网络${PLAIN}"
-    fi
-    
-    # 4. 删除网络接口和安装脚本
-    echo -e "${CYAN}[4/4] 删除网络接口${PLAIN}"
-    
-    # 删除macvlan网络接口
-    local macvlan_interface=$(get_state_value "macvlan_interface")
-    macvlan_interface=${macvlan_interface:-"mihomo_veth"}
-    
-    echo -e "${YELLOW}● 正在检查和清理网络设置...${PLAIN}"
-    if ip link show "$macvlan_interface" &>/dev/null; then
-        echo -e "${YELLOW}● 正在删除网络接口...${PLAIN}"
-        ip link del "$macvlan_interface" &>/dev/null
-        echo -e "${GREEN}● 网络接口已移除${PLAIN}"
-    fi
-    
-    # 删除网卡混杂模式服务
-    local main_interface=$(get_state_value "main_interface")
-    if [[ -n "$main_interface" && -f "/etc/systemd/system/promisc-$main_interface.service" ]]; then
-        systemctl disable "promisc-$main_interface.service" &>/dev/null
-        rm -f "/etc/systemd/system/promisc-$main_interface.service"
-        echo -e "${GREEN}● 网卡混杂模式服务已删除${PLAIN}"
-        
-        # 关闭网卡混杂模式
-        if ip link show "$main_interface" &>/dev/null; then
-            ip link set "$main_interface" promisc off &>/dev/null
-            echo -e "${GREEN}● 已关闭网卡混杂模式${PLAIN}"
-        fi
-    fi
-    
-    # 重载systemd服务
-    systemctl daemon-reload
-    
-    # 删除状态配置文件，但保留脚本
-    if [[ -f "$STATE_FILE" ]]; then
-        echo -e "${YELLOW}● 删除状态配置文件...${PLAIN}"
-        rm -f "$STATE_FILE"
-        echo -e "${GREEN}● 状态配置文件已删除${PLAIN}"
-    fi
-    
-    echo -e "\n${GREEN}======================================================${PLAIN}"
-    echo -e "${GREEN}Mihomo已成功卸载!${PLAIN}"
-    if [[ -d "$backup_dir" ]]; then
-        echo -e "${GREEN}配置文件备份已保存至: $backup_dir${PLAIN}"
-    fi
-    echo -e "${GREEN}======================================================${PLAIN}"
     
     read -p "按任意键返回主菜单..." key
     show_menu
@@ -1285,14 +1265,14 @@ main() {
     # 检查系统
     check_os
     
-    # 检测网络环境，初始化网络相关变量
+    # 检测网络环境初始化网络相关变量 - 但不自动创建状态文件
     detect_network
     
-    # 初始化状态文件
-    init_state_file
-    
-    # 检查配置文件模板
-    check_config_template
+    # 确保files目录存在
+    if [[ ! -d "$FILES_DIR" ]]; then
+        mkdir -p "$FILES_DIR"
+        echo -e "${GREEN}已创建files目录: $FILES_DIR${PLAIN}"
+    fi
     
     # 检查执行脚本是否存在
     check_exec_scripts

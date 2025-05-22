@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "mihomo_ip": "192.168.88.4",
+  "interface_ip": "",
+  "main_interface": "ens18",
+  "macvlan_interface": "mihomo_veth",
+  "installation_stage": "Step2_Completed",
+  "config_type": "preset",
+  "docker_method": "direct_pull",
+  "timestamp": "2025-05-22 12:14:27"
+}
