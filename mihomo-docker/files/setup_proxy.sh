@@ -172,64 +172,96 @@ install_docker() {
 # 创建Docker网络
 create_docker_network() {
     local mihomo_ip=$(get_state_value "mihomo_ip")
-    local interface_ip=$(get_state_value "interface_ip")
     local main_interface=$(get_state_value "main_interface")
     local macvlan_interface=$(get_state_value "macvlan_interface")
     macvlan_interface=${macvlan_interface:-"mihomo_veth"}
     
+    # 获取主接口的实际IP地址
+    local host_ip=$(ip -o -4 addr show dev "$main_interface" | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    
+    echo -e "${CYAN}正在配置网络环境...${PLAIN}"
+    echo -e "${YELLOW}• 主接口: $main_interface${PLAIN}"
+    echo -e "${YELLOW}• 主机IP: $host_ip${PLAIN}"
+    echo -e "${YELLOW}• Mihomo IP: $mihomo_ip${PLAIN}"
+    
+    # 检查变量是否正确设置
+    if [[ -z "$main_interface" || -z "$host_ip" || -z "$mihomo_ip" ]]; then
+        echo -e "${RED}错误: 网络配置信息不完整${PLAIN}"
+        echo -e "${YELLOW}主接口: ${main_interface:-未设置}${PLAIN}"
+        echo -e "${YELLOW}主机IP: ${host_ip:-未设置}${PLAIN}"
+        echo -e "${YELLOW}Mihomo IP: ${mihomo_ip:-未设置}${PLAIN}"
+        echo -e "${YELLOW}将使用bridge网络模式...${PLAIN}"
+        return 0
+    fi
+    
+    # 尝试创建Docker macvlan网络
     echo -e "${CYAN}正在检查Docker macvlan网络...${PLAIN}"
     
-    # 先检查网络是否已存在
     if docker network ls | grep -q mnet; then
-        echo -e "${YELLOW}Docker macvlan网络 'mnet' 已存在，跳过创建步骤${PLAIN}"
+        echo -e "${YELLOW}Docker macvlan网络 'mnet' 已存在${PLAIN}"
     else
         echo -e "${CYAN}正在创建Docker macvlan网络...${PLAIN}"
         
         # 获取网络信息
         local gateway=$(ip route | grep default | awk '{print $3}')
-        local subnet=$(ip -o -4 addr show dev "$main_interface" | awk '{print $4}' | cut -d/ -f1 | head -n1 | cut -d. -f1-3).0/24
+        local subnet=$(echo "$host_ip" | cut -d. -f1-3).0/24
+        
+        echo -e "${YELLOW}• 网关: $gateway${PLAIN}"
+        echo -e "${YELLOW}• 子网: $subnet${PLAIN}"
         
         # 创建macvlan网络
-        docker network create -d macvlan \
+        if docker network create -d macvlan \
             --subnet="$subnet" \
             --gateway="$gateway" \
             -o parent="$main_interface" \
-            mnet
-            
-        if [[ $? -ne 0 ]]; then
-            handle_error "错误: Docker网络创建失败"
+            mnet; then
+            echo -e "${GREEN}✓ Docker macvlan网络创建成功${PLAIN}"
+        else
+            echo -e "${YELLOW}⚠ Docker macvlan网络创建失败，将使用bridge网络${PLAIN}"
+            return 0
         fi
-        
-        echo -e "${GREEN}Docker网络已创建${PLAIN}"
     fi
     
-    # 确保主机上也有对应的macvlan接口
-    echo -e "${CYAN}正在检查主机macvlan接口...${PLAIN}"
+    # 简化主机macvlan接口配置
+    echo -e "${CYAN}正在配置主机网络接口...${PLAIN}"
+    
+    # 检查macvlan接口是否已存在
     if ip link show "$macvlan_interface" &>/dev/null; then
-        echo -e "${YELLOW}主机macvlan接口 '$macvlan_interface' 已存在，跳过创建步骤${PLAIN}"
+        echo -e "${YELLOW}主机macvlan接口 '$macvlan_interface' 已存在${PLAIN}"
     else
         echo -e "${CYAN}正在创建主机macvlan接口...${PLAIN}"
         
         # 创建macvlan接口
-        ip link add "$macvlan_interface" link "$main_interface" type macvlan mode bridge
-        
-        if [[ $? -ne 0 ]]; then
-            echo -e "${RED}警告: 主机macvlan接口创建失败，将尝试继续${PLAIN}"
-        else
+        if ip link add "$macvlan_interface" link "$main_interface" type macvlan mode bridge; then
+            echo -e "${GREEN}✓ macvlan接口创建成功${PLAIN}"
+            
+            # 计算一个不冲突的IP地址给主机接口
+            local host_macvlan_ip=$(echo "$mihomo_ip" | cut -d. -f1-3).254
+            
             # 配置接口IP并启用
-            ip addr add "${interface_ip}/24" dev "$macvlan_interface"
-            ip link set "$macvlan_interface" up
-            
-            # 添加到mihomo_ip的路由
-            ip route add "$mihomo_ip" dev "$macvlan_interface" 2>/dev/null
-            
-            echo -e "${GREEN}主机macvlan接口已创建并配置${PLAIN}"
+            if ip addr add "${host_macvlan_ip}/24" dev "$macvlan_interface" 2>/dev/null; then
+                ip link set "$macvlan_interface" up
+                echo -e "${GREEN}✓ macvlan接口配置完成 (IP: $host_macvlan_ip)${PLAIN}"
+                
+                # 添加到mihomo_ip的路由
+                ip route add "$mihomo_ip/32" dev "$macvlan_interface" 2>/dev/null
+            else
+                echo -e "${YELLOW}⚠ macvlan接口IP配置失败，但接口已创建${PLAIN}"
+                ip link set "$macvlan_interface" up
+            fi
+        else
+            echo -e "${YELLOW}⚠ 主机macvlan接口创建失败，将使用bridge网络${PLAIN}"
+            return 0
         fi
     fi
     
     # 设置主接口为混杂模式
     echo -e "${CYAN}正在设置主接口为混杂模式...${PLAIN}"
-    ip link set "$main_interface" promisc on
+    if ip link set "$main_interface" promisc on; then
+        echo -e "${GREEN}✓ 主接口混杂模式已启用${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ 主接口混杂模式设置失败${PLAIN}"
+    fi
     
     # 创建持久化的混杂模式服务
     echo -e "${CYAN}正在创建混杂模式持久化服务...${PLAIN}"
@@ -249,22 +281,9 @@ EOF
 
     # 启用服务
     systemctl daemon-reload
-    systemctl enable "promisc-$main_interface.service"
+    systemctl enable "promisc-$main_interface.service" 2>/dev/null
     
-    # 检查接口状态 - 简化接口状态输出
-    echo -e "${CYAN}检查网络配置状态...${PLAIN}"
-    if ip link show "$main_interface" | grep -q "PROMISC"; then
-        echo -e "${GREEN}主接口已设置为混杂模式${PLAIN}"
-    else
-        echo -e "${RED}警告: 主接口混杂模式可能未生效${PLAIN}"
-    fi
-    
-    # 不再显示macvlan接口详情
-    if ip link show "$macvlan_interface" &>/dev/null; then
-        echo -e "${GREEN}macvlan接口已创建${PLAIN}"
-    else
-        echo -e "${RED}警告: macvlan接口未找到${PLAIN}"
-    fi
+    echo -e "${GREEN}✓ 网络配置完成${PLAIN}"
 }
 
 # 创建配置目录
@@ -355,7 +374,6 @@ copy_config_file() {
 # 启动Mihomo容器
 start_mihomo_container() {
     local mihomo_ip=$(get_state_value "mihomo_ip")
-    local interface_ip=$(get_state_value "interface_ip")
     
     echo -e "${CYAN}正在启动Mihomo容器...${PLAIN}"
     
@@ -363,72 +381,122 @@ start_mihomo_container() {
     docker stop mihomo 2>/dev/null
     docker rm mihomo 2>/dev/null
     
-    # 首先尝试使用macvlan网络
-    echo -e "${YELLOW}尝试使用macvlan网络启动容器...${PLAIN}"
-    docker run -d --privileged \
-        --name=mihomo --restart=unless-stopped \
-        --network mnet --ip "$mihomo_ip" \
-        -v "$CONF_DIR:/root/.config/mihomo/" \
-        --cap-add=NET_ADMIN \
-        --cap-add=NET_RAW \
-        metacubex/mihomo:latest
+    local container_started=0
+    local access_url=""
     
-    # 等待几秒钟检查容器状态
-    sleep 5
-    
-    # 检查容器是否正常运行
-    if docker ps | grep -q mihomo && ! docker ps -a --filter "name=mihomo" --format "{{.Status}}" | grep -q "Restarting"; then
-        echo -e "${GREEN}✓ 容器使用macvlan网络启动成功${PLAIN}"
+    # 检查是否有macvlan网络可用
+    if docker network ls | grep -q mnet && [[ -n "$mihomo_ip" ]]; then
+        echo -e "${CYAN}尝试使用macvlan网络启动容器...${PLAIN}"
+        echo -e "${YELLOW}• 网络: mnet (macvlan)${PLAIN}"
+        echo -e "${YELLOW}• IP地址: $mihomo_ip${PLAIN}"
+        
+        # 使用macvlan网络启动
+        if docker run -d \
+            --name=mihomo \
+            --restart=unless-stopped \
+            --network mnet \
+            --ip "$mihomo_ip" \
+            -v "$CONF_DIR:/root/.config/mihomo" \
+            --cap-add=NET_ADMIN \
+            --cap-add=NET_RAW \
+            metacubex/mihomo:latest >/dev/null 2>&1; then
+            
+            # 等待容器启动
+            sleep 5
+            
+            # 检查容器状态
+            if docker ps --filter "name=mihomo" --format "{{.Status}}" | grep -q "Up" && \
+               ! docker ps --filter "name=mihomo" --format "{{.Status}}" | grep -q "Restarting"; then
+                container_started=1
+                access_url="http://$mihomo_ip:9090/ui"
+                echo -e "${GREEN}✓ macvlan网络启动成功${PLAIN}"
+            else
+                echo -e "${YELLOW}⚠ macvlan网络容器状态异常，尝试bridge网络...${PLAIN}"
+                docker stop mihomo 2>/dev/null
+                docker rm mihomo 2>/dev/null
+            fi
+        else
+            echo -e "${YELLOW}⚠ macvlan网络启动失败，尝试bridge网络...${PLAIN}"
+        fi
     else
-        echo -e "${YELLOW}⚠ macvlan网络启动失败，尝试使用bridge网络...${PLAIN}"
+        echo -e "${YELLOW}macvlan网络不可用，直接使用bridge网络...${PLAIN}"
+    fi
+    
+    # 如果macvlan失败，使用bridge网络
+    if [[ $container_started -eq 0 ]]; then
+        echo -e "${CYAN}使用bridge网络启动容器...${PLAIN}"
+        local host_ip=$(hostname -I | awk '{print $1}')
+        echo -e "${YELLOW}• 网络: bridge${PLAIN}"
+        echo -e "${YELLOW}• 主机IP: $host_ip${PLAIN}"
         
-        # 停止并删除失败的容器
-        docker stop mihomo 2>/dev/null
-        docker rm mihomo 2>/dev/null
-        
-        # 使用bridge网络重新启动
-        docker run -d \
-            --name=mihomo --restart=unless-stopped \
+        if docker run -d \
+            --name=mihomo \
+            --restart=unless-stopped \
             --network=bridge \
             -p 9090:9090 \
             -p 7890:7890 \
             -p 7891:7891 \
             -p 7892:7892 \
-            -v "$CONF_DIR:/root/.config/mihomo/" \
+            -v "$CONF_DIR:/root/.config/mihomo" \
             --cap-add=NET_ADMIN \
             --cap-add=NET_RAW \
-            metacubex/mihomo:latest
-        
-        if [[ $? -ne 0 ]]; then
-            handle_error "错误: 容器启动失败"
+            metacubex/mihomo:latest >/dev/null 2>&1; then
+            
+            # 等待容器启动
+            sleep 5
+            
+            # 检查容器状态
+            if docker ps --filter "name=mihomo" --format "{{.Status}}" | grep -q "Up"; then
+                container_started=1
+                access_url="http://$host_ip:9090/ui"
+                echo -e "${GREEN}✓ bridge网络启动成功${PLAIN}"
+            else
+                echo -e "${RED}✗ bridge网络启动也失败${PLAIN}"
+            fi
+        else
+            echo -e "${RED}✗ bridge网络启动失败${PLAIN}"
         fi
-        
-        echo -e "${GREEN}✓ 容器使用bridge网络启动成功${PLAIN}"
-        echo -e "${YELLOW}注意: 使用bridge网络，控制面板地址为: http://$(hostname -I | awk '{print $1}'):9090/ui${PLAIN}"
     fi
     
-    echo -e "${GREEN}Mihomo容器已启动${PLAIN}"
-    
-    # 等待容器启动并检查状态
-    sleep 3
-    if docker ps | grep -q mihomo; then
-        echo -e "${GREEN}✓ 容器运行状态正常${PLAIN}"
+    # 检查最终结果
+    if [[ $container_started -eq 1 ]]; then
+        echo -e "${GREEN}✓ Mihomo容器启动成功${PLAIN}"
         
-        # 显示访问信息
-        local container_network=$(docker inspect mihomo --format '{{.NetworkSettings.Networks}}')
-        if echo "$container_network" | grep -q "mnet"; then
-            echo -e "${GREEN}访问地址: http://$mihomo_ip:9090/ui${PLAIN}"
+        # 等待服务完全启动
+        echo -e "${CYAN}等待服务启动...${PLAIN}"
+        sleep 3
+        
+        # 最终状态检查
+        local container_status=$(docker ps --filter "name=mihomo" --format "{{.Status}}")
+        if [[ -n "$container_status" && "$container_status" == *"Up"* ]]; then
+            echo -e "${GREEN}✓ 服务运行正常${PLAIN}"
+            echo -e "${GREEN}✓ 控制面板: $access_url${PLAIN}"
+            
+            # 显示代理端口信息
+            local container_network=$(docker inspect mihomo --format '{{.NetworkSettings.Networks}}' 2>/dev/null)
+            if echo "$container_network" | grep -q "mnet" && [[ -n "$mihomo_ip" ]]; then
+                echo -e "${GREEN}✓ HTTP代理: $mihomo_ip:7891${PLAIN}"
+                echo -e "${GREEN}✓ SOCKS代理: $mihomo_ip:7892${PLAIN}"
+                echo -e "${GREEN}✓ 混合代理: $mihomo_ip:7890${PLAIN}"
+            else
+                local host_ip=$(hostname -I | awk '{print $1}')
+                echo -e "${GREEN}✓ HTTP代理: $host_ip:7891${PLAIN}"
+                echo -e "${GREEN}✓ SOCKS代理: $host_ip:7892${PLAIN}"
+                echo -e "${GREEN}✓ 混合代理: $host_ip:7890${PLAIN}"
+            fi
         else
-            local host_ip=$(hostname -I | awk '{print $1}')
-            echo -e "${GREEN}访问地址: http://$host_ip:9090/ui${PLAIN}"
+            echo -e "${YELLOW}⚠ 容器状态异常，请检查日志${PLAIN}"
+            docker logs mihomo --tail 10 2>/dev/null
         fi
     else
-        echo -e "${YELLOW}警告: 容器可能未正常启动，检查日志...${PLAIN}"
-        docker logs mihomo --tail 10
+        echo -e "${RED}✗ 容器启动失败${PLAIN}"
+        echo -e "${YELLOW}正在显示错误日志...${PLAIN}"
+        docker logs mihomo --tail 20 2>/dev/null
         
-        # 如果仍然失败，提供诊断建议
-        echo -e "${YELLOW}如果容器持续重启，请运行诊断脚本:${PLAIN}"
-        echo -e "${YELLOW}bash fix_container_restart.sh${PLAIN}"
+        echo -e "${YELLOW}可能的解决方案:${PLAIN}"
+        echo -e "${YELLOW}1. 检查配置文件: nano /etc/mihomo/config.yaml${PLAIN}"
+        echo -e "${YELLOW}2. 重置配置: 选择菜单中的'重置配置'选项${PLAIN}"
+        echo -e "${YELLOW}3. 查看完整日志: docker logs mihomo${PLAIN}"
     fi
 }
 
