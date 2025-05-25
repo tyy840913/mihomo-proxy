@@ -284,27 +284,35 @@ copy_config_file() {
     # 直接从files目录中获取配置文件
     local config_template="$FILES_DIR/config.yaml"
     
-    echo -e "${CYAN}正在复制配置文件...${PLAIN}"
+    echo -e "${CYAN}正在检查配置文件...${PLAIN}"
     
     # 创建配置目录
     mkdir -p "$CONF_DIR"
     
-    # 检查配置文件是否存在
-    if [[ ! -f "$config_template" ]]; then
-        handle_error "错误: 配置文件不存在($config_template)"
+    # 检查是否已存在配置文件
+    if [[ -f "$CONF_DIR/config.yaml" ]]; then
+        echo -e "${YELLOW}配置文件已存在: $CONF_DIR/config.yaml${PLAIN}"
+        echo -e "${YELLOW}跳过配置文件复制，保留现有配置${PLAIN}"
     else
-        echo -e "${GREEN}找到配置文件: $config_template${PLAIN}"
+        echo -e "${CYAN}正在复制配置文件...${PLAIN}"
+        
+        # 检查模板配置文件是否存在
+        if [[ ! -f "$config_template" ]]; then
+            handle_error "错误: 配置文件不存在($config_template)"
+        else
+            echo -e "${GREEN}找到配置文件: $config_template${PLAIN}"
+        fi
+        
+        # 复制配置文件
+        cp "$config_template" "$CONF_DIR/config.yaml"
+        if [[ $? -ne 0 ]]; then
+            handle_error "错误: 配置文件复制失败"
+        fi
+        
+        # 设置配置文件权限
+        chmod 644 "$CONF_DIR/config.yaml"
+        echo -e "${GREEN}配置文件已复制到 $CONF_DIR/config.yaml${PLAIN}"
     fi
-    
-    # 复制配置文件
-    cp "$config_template" "$CONF_DIR/config.yaml"
-    if [[ $? -ne 0 ]]; then
-        handle_error "错误: 配置文件复制失败"
-    fi
-    
-    # 设置配置文件权限
-    chmod 644 "$CONF_DIR/config.yaml"
-    echo -e "${GREEN}配置文件已复制到 $CONF_DIR/config.yaml${PLAIN}"
     
     # 下载和设置UI包
     echo -e "${CYAN}正在设置UI界面...${PLAIN}"
@@ -426,9 +434,25 @@ start_mihomo_container() {
 
 # 主函数
 main() {
+    local mode="${1:-install}"  # 默认为install模式
+    
     # 创建日志文件
     touch "$LOG_FILE"
     chmod 644 "$LOG_FILE"
+    
+    if [[ "$mode" == "restart" ]]; then
+        log_message "信息" "开始执行代理机重启脚本"
+        echo -e "${CYAN}正在重启Mihomo服务...${PLAIN}"
+        
+        # 只重启容器，不重新安装或配置
+        start_mihomo_container
+        
+        echo -e "${GREEN}Mihomo服务重启完成！${PLAIN}"
+        log_message "信息" "代理机重启脚本执行完成"
+        return 0
+    fi
+    
+    # 完整安装模式
     log_message "信息" "开始执行代理机配置脚本"
     
     # 首先确保jq已安装
@@ -445,7 +469,7 @@ main() {
     # 创建配置目录
     create_config_dir
     
-    # 复制配置文件
+    # 复制配置文件（现在会检查是否已存在）
     copy_config_file
     
     # 启动Mihomo容器
@@ -466,5 +490,5 @@ main() {
     log_message "信息" "代理机配置脚本执行完成"
 }
 
-# 执行主函数
-main
+# 执行主函数，传递命令行参数
+main "$@"

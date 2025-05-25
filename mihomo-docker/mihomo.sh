@@ -813,7 +813,8 @@ show_menu() {
     echo -e " ${GREEN}[3] 3. 检查状态${PLAIN}      - ${YELLOW}检查Mihomo安装和运行状态${PLAIN}"
     echo -e " ${GREEN}[4] 4. 重启服务${PLAIN}      - ${YELLOW}重启Mihomo代理服务${PLAIN}"
     echo -e " ${GREEN}[5] 5. 配置路由器${PLAIN}    - ${YELLOW}生成路由器配置命令${PLAIN}"
-    echo -e " ${RED}[6] 6. 卸载Mihomo${PLAIN}    - ${YELLOW}完全卸载Mihomo及其配置${PLAIN}"
+    echo -e " ${PURPLE}[6] 6. 重置配置${PLAIN}      - ${YELLOW}重置配置文件并重启服务${PLAIN}"
+    echo -e " ${RED}[7] 7. 卸载Mihomo${PLAIN}    - ${YELLOW}完全卸载Mihomo及其配置${PLAIN}"
     echo -e " ${GREEN}[0] 0. 退出脚本${PLAIN}"
     echo -e "${CYAN}===========================================================${PLAIN}"
     
@@ -829,7 +830,7 @@ show_menu() {
     fi
     echo
     
-    read -p "请输入选择 [0-6]: " choice
+    read -p "请输入选择 [0-7]: " choice
     
     case $choice in
         1)
@@ -853,6 +854,10 @@ show_menu() {
             configure_router
             ;;
         6)
+            # 重置配置文件
+            reset_config_file
+            ;;
+        7)
             # 卸载Mihomo
             uninstall_mihomo
             ;;
@@ -1247,29 +1252,291 @@ restart_mihomo_service() {
     fi
     
     # 停止并删除已存在的容器
+    echo -e "${CYAN}正在停止现有容器...${PLAIN}"
     docker stop mihomo 2>/dev/null
     docker rm mihomo 2>/dev/null
     
-    # 重新启动代理配置
-    if [[ -f "$PROXY_SCRIPT" ]]; then
-        echo -e "${CYAN}正在重新启动Mihomo容器...${PLAIN}"
-        if bash "$PROXY_SCRIPT" restart; then
-            echo -e "${GREEN}Mihomo服务已成功重启!${PLAIN}"
-            if [[ -n "$mihomo_ip" ]]; then
-                echo -e "\n${GREEN}======================================================${PLAIN}"
-                echo -e "${GREEN}访问信息:${PLAIN}"
-                echo -e "${GREEN}• 控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
-                echo -e "${GREEN}• HTTP代理: $mihomo_ip:7891${PLAIN}"
-                echo -e "${GREEN}• SOCKS代理: $mihomo_ip:7892${PLAIN}"
-                echo -e "${GREEN}• 混合代理: $mihomo_ip:7890${PLAIN}"
-                echo -e "${GREEN}======================================================${PLAIN}"
-            fi
+    # 检查配置文件是否存在
+    if [[ ! -f "/etc/mihomo/config.yaml" ]]; then
+        echo -e "${RED}错误: 配置文件不存在 (/etc/mihomo/config.yaml)${PLAIN}"
+        echo -e "${YELLOW}请先完成完整安装或手动创建配置文件${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    # 直接重启容器，不重置配置文件
+    echo -e "${CYAN}正在重新启动Mihomo容器...${PLAIN}"
+    
+    # 首先尝试使用macvlan网络（如果存在）
+    local restart_success=0
+    if docker network ls | grep -q mnet && [[ -n "$mihomo_ip" ]]; then
+        echo -e "${YELLOW}尝试使用macvlan网络重启...${PLAIN}"
+        docker run -d --privileged \
+            --name=mihomo --restart=unless-stopped \
+            --network mnet --ip "$mihomo_ip" \
+            -v /etc/mihomo:/root/.config/mihomo \
+            --cap-add=NET_ADMIN \
+            --cap-add=NET_RAW \
+            metacubex/mihomo:latest
+        
+        # 等待并检查容器状态
+        sleep 3
+        if docker ps | grep -q mihomo && ! docker ps -a --filter "name=mihomo" --format "{{.Status}}" | grep -q "Restarting"; then
+            restart_success=1
+            echo -e "${GREEN}✓ 使用macvlan网络重启成功${PLAIN}"
         else
-            echo -e "${RED}重启Mihomo服务失败${PLAIN}"
+            echo -e "${YELLOW}macvlan网络重启失败，尝试bridge网络...${PLAIN}"
+            docker stop mihomo 2>/dev/null
+            docker rm mihomo 2>/dev/null
         fi
+    fi
+    
+    # 如果macvlan失败或不存在，使用bridge网络
+    if [[ $restart_success -eq 0 ]]; then
+        echo -e "${YELLOW}使用bridge网络重启...${PLAIN}"
+        docker run -d \
+            --name=mihomo --restart=unless-stopped \
+            --network=bridge \
+            -p 9090:9090 \
+            -p 7890:7890 \
+            -p 7891:7891 \
+            -p 7892:7892 \
+            -v /etc/mihomo:/root/.config/mihomo \
+            --cap-add=NET_ADMIN \
+            --cap-add=NET_RAW \
+            metacubex/mihomo:latest
+        
+        if [[ $? -eq 0 ]]; then
+            restart_success=1
+            echo -e "${GREEN}✓ 使用bridge网络重启成功${PLAIN}"
+        fi
+    fi
+    
+    # 检查重启结果
+    if [[ $restart_success -eq 1 ]]; then
+        echo -e "${GREEN}Mihomo服务已成功重启!${PLAIN}"
+        echo -e "${GREEN}✓ 配置文件已保留，无需重新配置${PLAIN}"
+        
+        # 等待容器完全启动
+        sleep 3
+        
+        # 显示访问信息
+        echo -e "\n${GREEN}======================================================${PLAIN}"
+        echo -e "${GREEN}访问信息:${PLAIN}"
+        
+        # 检查使用的网络类型
+        local container_network=$(docker inspect mihomo --format '{{.NetworkSettings.Networks}}' 2>/dev/null)
+        if echo "$container_network" | grep -q "mnet" && [[ -n "$mihomo_ip" ]]; then
+            echo -e "${GREEN}• 控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
+            echo -e "${GREEN}• HTTP代理: $mihomo_ip:7891${PLAIN}"
+            echo -e "${GREEN}• SOCKS代理: $mihomo_ip:7892${PLAIN}"
+            echo -e "${GREEN}• 混合代理: $mihomo_ip:7890${PLAIN}"
+        else
+            local host_ip=$(hostname -I | awk '{print $1}')
+            echo -e "${GREEN}• 控制面板: http://$host_ip:9090/ui${PLAIN}"
+            echo -e "${GREEN}• HTTP代理: $host_ip:7891${PLAIN}"
+            echo -e "${GREEN}• SOCKS代理: $host_ip:7892${PLAIN}"
+            echo -e "${GREEN}• 混合代理: $host_ip:7890${PLAIN}"
+        fi
+        echo -e "${GREEN}======================================================${PLAIN}"
     else
-        echo -e "${RED}错误: 代理配置脚本不存在 ($PROXY_SCRIPT)${PLAIN}"
-        echo -e "${YELLOW}请确保安装文件完整${PLAIN}"
+        echo -e "${RED}重启Mihomo服务失败${PLAIN}"
+        echo -e "${YELLOW}请检查Docker日志: docker logs mihomo${PLAIN}"
+    fi
+    
+    read -p "按任意键返回主菜单..." key
+    show_menu
+}
+
+# 重置配置文件
+reset_config_file() {
+    clear
+    echo -e "${CYAN}======================================================${PLAIN}"
+    echo -e "${PURPLE}              重置Mihomo配置文件${PLAIN}"
+    echo -e "${CYAN}======================================================${PLAIN}"
+    
+    # 检查Mihomo是否已安装
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo -e "${YELLOW}未检测到Mihomo安装状态，请先完成安装。${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    local mihomo_ip=$(get_state_value "mihomo_ip")
+    local stage=$(get_state_value "installation_stage")
+    
+    if [[ -z "$mihomo_ip" || "$stage" != "Step2_Completed" ]]; then
+        echo -e "${YELLOW}Mihomo似乎未完成安装，请先完成安装。${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    echo -e "${YELLOW}警告: 此操作将重置Mihomo配置文件${PLAIN}"
+    echo -e "${YELLOW}包括：${PLAIN}"
+    echo -e "${YELLOW}• 删除当前的config.yaml配置文件${PLAIN}"
+    echo -e "${YELLOW}• 恢复为默认模板配置${PLAIN}"
+    echo -e "${YELLOW}• 重启Mihomo服务${PLAIN}"
+    echo -e "${RED}• 您的自定义配置将会丢失！${PLAIN}"
+    echo
+    
+    # 显示当前配置文件信息
+    if [[ -f "/etc/mihomo/config.yaml" ]]; then
+        echo -e "${CYAN}当前配置文件信息:${PLAIN}"
+        echo -e "${YELLOW}• 文件路径: /etc/mihomo/config.yaml${PLAIN}"
+        echo -e "${YELLOW}• 文件大小: $(du -h /etc/mihomo/config.yaml | cut -f1)${PLAIN}"
+        echo -e "${YELLOW}• 修改时间: $(stat -c %y /etc/mihomo/config.yaml 2>/dev/null || stat -f %Sm /etc/mihomo/config.yaml)${PLAIN}"
+        echo
+    fi
+    
+    read -p "是否确认重置配置文件? (y/n): " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "${GREEN}已取消重置操作${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    echo -e "${CYAN}开始重置配置文件...${PLAIN}"
+    
+    # 1. 备份当前配置文件
+    if [[ -f "/etc/mihomo/config.yaml" ]]; then
+        local backup_file="/etc/mihomo/config.yaml.backup.$(date '+%Y%m%d_%H%M%S')"
+        echo -e "${CYAN}正在备份当前配置文件...${PLAIN}"
+        cp "/etc/mihomo/config.yaml" "$backup_file" 2>/dev/null
+        if [[ $? -eq 0 ]]; then
+            echo -e "${GREEN}✓ 配置文件已备份到: $backup_file${PLAIN}"
+        else
+            echo -e "${YELLOW}⚠ 配置文件备份失败，继续重置...${PLAIN}"
+        fi
+    fi
+    
+    # 2. 删除当前配置文件
+    echo -e "${CYAN}正在删除当前配置文件...${PLAIN}"
+    rm -f "/etc/mihomo/config.yaml" 2>/dev/null
+    if [[ $? -eq 0 ]]; then
+        echo -e "${GREEN}✓ 当前配置文件已删除${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ 配置文件删除失败${PLAIN}"
+    fi
+    
+    # 3. 检查模板配置文件是否存在
+    local config_template="$FILES_DIR/config.yaml"
+    if [[ ! -f "$config_template" ]]; then
+        echo -e "${RED}错误: 配置模板文件不存在 ($config_template)${PLAIN}"
+        echo -e "${YELLOW}请确保files目录下有config.yaml模板文件${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    # 4. 复制新的配置文件
+    echo -e "${CYAN}正在恢复默认配置文件...${PLAIN}"
+    mkdir -p "/etc/mihomo"
+    cp "$config_template" "/etc/mihomo/config.yaml"
+    if [[ $? -eq 0 ]]; then
+        chmod 644 "/etc/mihomo/config.yaml"
+        echo -e "${GREEN}✓ 默认配置文件已恢复${PLAIN}"
+    else
+        echo -e "${RED}错误: 配置文件恢复失败${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        show_menu
+        return
+    fi
+    
+    # 5. 重启Mihomo服务
+    echo -e "${CYAN}正在重启Mihomo服务...${PLAIN}"
+    
+    # 停止当前容器
+    docker stop mihomo 2>/dev/null
+    docker rm mihomo 2>/dev/null
+    
+    # 重新启动容器
+    local restart_success=0
+    
+    # 首先尝试使用macvlan网络（如果存在）
+    if docker network ls | grep -q mnet && [[ -n "$mihomo_ip" ]]; then
+        echo -e "${YELLOW}尝试使用macvlan网络重启...${PLAIN}"
+        docker run -d --privileged \
+            --name=mihomo --restart=unless-stopped \
+            --network mnet --ip "$mihomo_ip" \
+            -v /etc/mihomo:/root/.config/mihomo \
+            --cap-add=NET_ADMIN \
+            --cap-add=NET_RAW \
+            metacubex/mihomo:latest
+        
+        # 等待并检查容器状态
+        sleep 3
+        if docker ps | grep -q mihomo && ! docker ps -a --filter "name=mihomo" --format "{{.Status}}" | grep -q "Restarting"; then
+            restart_success=1
+            echo -e "${GREEN}✓ 使用macvlan网络重启成功${PLAIN}"
+        else
+            echo -e "${YELLOW}macvlan网络重启失败，尝试bridge网络...${PLAIN}"
+            docker stop mihomo 2>/dev/null
+            docker rm mihomo 2>/dev/null
+        fi
+    fi
+    
+    # 如果macvlan失败或不存在，使用bridge网络
+    if [[ $restart_success -eq 0 ]]; then
+        echo -e "${YELLOW}使用bridge网络重启...${PLAIN}"
+        docker run -d \
+            --name=mihomo --restart=unless-stopped \
+            --network=bridge \
+            -p 9090:9090 \
+            -p 7890:7890 \
+            -p 7891:7891 \
+            -p 7892:7892 \
+            -v /etc/mihomo:/root/.config/mihomo \
+            --cap-add=NET_ADMIN \
+            --cap-add=NET_RAW \
+            metacubex/mihomo:latest
+        
+        if [[ $? -eq 0 ]]; then
+            restart_success=1
+            echo -e "${GREEN}✓ 使用bridge网络重启成功${PLAIN}"
+        fi
+    fi
+    
+    # 6. 显示结果
+    if [[ $restart_success -eq 1 ]]; then
+        echo -e "\n${GREEN}======================================================${PLAIN}"
+        echo -e "${GREEN}配置文件重置完成!${PLAIN}"
+        echo -e "${GREEN}======================================================${PLAIN}"
+        echo -e "${GREEN}✓ 配置文件已重置为默认模板${PLAIN}"
+        echo -e "${GREEN}✓ Mihomo服务已重启${PLAIN}"
+        
+        # 等待容器完全启动
+        sleep 3
+        
+        # 显示访问信息
+        echo -e "\n${GREEN}访问信息:${PLAIN}"
+        
+        # 检查使用的网络类型
+        local container_network=$(docker inspect mihomo --format '{{.NetworkSettings.Networks}}' 2>/dev/null)
+        if echo "$container_network" | grep -q "mnet" && [[ -n "$mihomo_ip" ]]; then
+            echo -e "${GREEN}• 控制面板: http://$mihomo_ip:9090/ui${PLAIN}"
+            echo -e "${GREEN}• HTTP代理: $mihomo_ip:7891${PLAIN}"
+            echo -e "${GREEN}• SOCKS代理: $mihomo_ip:7892${PLAIN}"
+            echo -e "${GREEN}• 混合代理: $mihomo_ip:7890${PLAIN}"
+        else
+            local host_ip=$(hostname -I | awk '{print $1}')
+            echo -e "${GREEN}• 控制面板: http://$host_ip:9090/ui${PLAIN}"
+            echo -e "${GREEN}• HTTP代理: $host_ip:7891${PLAIN}"
+            echo -e "${GREEN}• SOCKS代理: $host_ip:7892${PLAIN}"
+            echo -e "${GREEN}• 混合代理: $host_ip:7890${PLAIN}"
+        fi
+        
+        echo -e "\n${YELLOW}重要提示:${PLAIN}"
+        echo -e "${YELLOW}• 配置文件已重置为默认模板${PLAIN}"
+        echo -e "${YELLOW}• 请编辑 /etc/mihomo/config.yaml 添加您的代理服务器${PLAIN}"
+        echo -e "${YELLOW}• 修改配置后需要重启服务才能生效${PLAIN}"
+        echo -e "${GREEN}======================================================${PLAIN}"
+    else
+        echo -e "${RED}配置重置失败，服务重启失败${PLAIN}"
+        echo -e "${YELLOW}请检查Docker日志: docker logs mihomo${PLAIN}"
     fi
     
     read -p "按任意键返回主菜单..." key
@@ -1285,9 +1552,11 @@ uninstall_mihomo() {
     
     echo -e "${YELLOW}警告: 此操作将完全卸载Mihomo及其配置${PLAIN}"
     echo -e "${YELLOW}包括：${PLAIN}"
-    echo -e "${YELLOW}• 删除Mihomo容器${PLAIN}"
-    echo -e "${YELLOW}• 删除网络配置${PLAIN}"
-    echo -e "${YELLOW}• 删除配置文件${PLAIN}"
+    echo -e "${YELLOW}• 删除Mihomo容器和镜像${PLAIN}"
+    echo -e "${YELLOW}• 删除Docker网络(mnet)${PLAIN}"
+    echo -e "${YELLOW}• 删除macvlan网络接口${PLAIN}"
+    echo -e "${YELLOW}• 删除配置文件和状态文件${PLAIN}"
+    echo -e "${YELLOW}• 删除混杂模式服务${PLAIN}"
     echo
     
     read -p "是否确认卸载? (y/n): " confirm
@@ -1298,38 +1567,130 @@ uninstall_mihomo() {
         return
     fi
     
-    echo -e "${CYAN}开始卸载Mihomo...${PLAIN}"
+    echo -e "${CYAN}开始彻底卸载Mihomo...${PLAIN}"
     
     # 1. 停止和删除Docker容器
     if command -v docker &> /dev/null; then
         echo -e "${CYAN}正在停止并删除Mihomo容器...${PLAIN}"
         docker stop mihomo 2>/dev/null
         docker rm mihomo 2>/dev/null
-        echo -e "${GREEN}Mihomo容器已删除${PLAIN}"
+        echo -e "${GREEN}✓ Mihomo容器已删除${PLAIN}"
+        
+        # 删除Docker网络
+        echo -e "${CYAN}正在删除Docker macvlan网络...${PLAIN}"
+        if docker network ls | grep -q mnet; then
+            docker network rm mnet 2>/dev/null
+            if [[ $? -eq 0 ]]; then
+                echo -e "${GREEN}✓ Docker网络 'mnet' 已删除${PLAIN}"
+            else
+                echo -e "${YELLOW}⚠ Docker网络 'mnet' 删除失败，可能有其他容器在使用${PLAIN}"
+            fi
+        else
+            echo -e "${YELLOW}⚠ Docker网络 'mnet' 不存在${PLAIN}"
+        fi
+        
+        # 可选：删除Mihomo镜像
+        echo -e "${CYAN}检查Mihomo镜像...${PLAIN}"
+        if docker images | grep -q metacubex/mihomo; then
+            read -p "是否同时删除Mihomo镜像? (y/n): " remove_image
+            if [[ "$remove_image" == "y" || "$remove_image" == "Y" ]]; then
+                docker rmi metacubex/mihomo:latest 2>/dev/null
+                echo -e "${GREEN}✓ Mihomo镜像已删除${PLAIN}"
+            else
+                echo -e "${YELLOW}⚠ 保留Mihomo镜像${PLAIN}"
+            fi
+        fi
     fi
     
-    # 2. 删除网络配置
+    # 2. 删除主机网络配置
     local macvlan_interface="mihomo_veth"
+    local main_interface=""
+    
     if [[ -f "$STATE_FILE" ]]; then
         macvlan_interface=$(get_state_value "macvlan_interface")
+        main_interface=$(get_state_value "main_interface")
     fi
     
-    echo -e "${CYAN}正在删除网络配置...${PLAIN}"
-    if ip link show $macvlan_interface &>/dev/null; then
-        ip link delete $macvlan_interface 2>/dev/null
-        echo -e "${GREEN}已删除macvlan接口: $macvlan_interface${PLAIN}"
+    echo -e "${CYAN}正在删除主机网络配置...${PLAIN}"
+    
+    # 删除macvlan接口
+    if ip link show "$macvlan_interface" &>/dev/null; then
+        ip link delete "$macvlan_interface" 2>/dev/null
+        if [[ $? -eq 0 ]]; then
+            echo -e "${GREEN}✓ 已删除macvlan接口: $macvlan_interface${PLAIN}"
+        else
+            echo -e "${YELLOW}⚠ macvlan接口删除失败: $macvlan_interface${PLAIN}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ macvlan接口不存在: $macvlan_interface${PLAIN}"
     fi
     
-    # 3. 删除配置文件
+    # 删除混杂模式服务
+    if [[ -n "$main_interface" ]]; then
+        local promisc_service="promisc-$main_interface.service"
+        echo -e "${CYAN}正在删除混杂模式服务...${PLAIN}"
+        
+        if systemctl is-enabled "$promisc_service" &>/dev/null; then
+            systemctl disable "$promisc_service" 2>/dev/null
+            systemctl stop "$promisc_service" 2>/dev/null
+            rm -f "/etc/systemd/system/$promisc_service" 2>/dev/null
+            systemctl daemon-reload
+            echo -e "${GREEN}✓ 已删除混杂模式服务: $promisc_service${PLAIN}"
+        else
+            echo -e "${YELLOW}⚠ 混杂模式服务不存在或未启用${PLAIN}"
+        fi
+        
+        # 关闭主接口混杂模式
+        if ip link show "$main_interface" | grep -q "PROMISC"; then
+            ip link set "$main_interface" promisc off 2>/dev/null
+            echo -e "${GREEN}✓ 已关闭主接口混杂模式: $main_interface${PLAIN}"
+        fi
+    fi
+    
+    # 3. 删除配置文件和目录
     echo -e "${CYAN}正在删除配置文件...${PLAIN}"
-    rm -rf /etc/mihomo 2>/dev/null
+    if [[ -d "/etc/mihomo" ]]; then
+        rm -rf /etc/mihomo 2>/dev/null
+        echo -e "${GREEN}✓ 已删除配置目录: /etc/mihomo${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ 配置目录不存在: /etc/mihomo${PLAIN}"
+    fi
+    
+    # 删除状态文件
     if [[ -f "$STATE_FILE" ]]; then
         rm -f "$STATE_FILE" 2>/dev/null
-        echo -e "${GREEN}已删除状态文件: $STATE_FILE${PLAIN}"
+        echo -e "${GREEN}✓ 已删除状态文件: $STATE_FILE${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ 状态文件不存在: $STATE_FILE${PLAIN}"
     fi
     
+    # 删除日志文件
+    if [[ -f "$LOG_FILE" ]]; then
+        rm -f "$LOG_FILE" 2>/dev/null
+        echo -e "${GREEN}✓ 已删除日志文件: $LOG_FILE${PLAIN}"
+    fi
+    
+    # 4. 清理可能残留的路由规则
+    echo -e "${CYAN}正在清理网络路由...${PLAIN}"
+    # 删除可能的静态路由（如果有的话）
+    local mihomo_ip=""
+    if [[ -f "$STATE_FILE" ]]; then
+        mihomo_ip=$(get_state_value "mihomo_ip")
+        if [[ -n "$mihomo_ip" ]]; then
+            ip route del "$mihomo_ip" 2>/dev/null
+        fi
+    fi
+    echo -e "${GREEN}✓ 网络路由清理完成${PLAIN}"
+    
     echo -e "\n${GREEN}======================================================${PLAIN}"
-    echo -e "${GREEN}Mihomo卸载完成!${PLAIN}"
+    echo -e "${GREEN}Mihomo彻底卸载完成!${PLAIN}"
+    echo -e "${GREEN}======================================================${PLAIN}"
+    echo -e "${GREEN}已清理的项目:${PLAIN}"
+    echo -e "${GREEN}• Docker容器和网络${PLAIN}"
+    echo -e "${GREEN}• macvlan网络接口${PLAIN}"
+    echo -e "${GREEN}• 混杂模式服务${PLAIN}"
+    echo -e "${GREEN}• 配置文件和状态文件${PLAIN}"
+    echo -e "${GREEN}• 网络路由规则${PLAIN}"
     echo -e "${GREEN}======================================================${PLAIN}"
     
     read -p "按任意键返回主菜单..." key
