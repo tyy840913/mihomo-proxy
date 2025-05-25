@@ -355,19 +355,48 @@ start_mihomo_container() {
     docker stop mihomo 2>/dev/null
     docker rm mihomo 2>/dev/null
     
-    # 启动新容器 - 修复端口映射和网络配置
+    # 首先尝试使用macvlan网络
+    echo -e "${YELLOW}尝试使用macvlan网络启动容器...${PLAIN}"
     docker run -d --privileged \
         --name=mihomo --restart=unless-stopped \
         --network mnet --ip "$mihomo_ip" \
         -v "$CONF_DIR:/root/.config/mihomo/" \
-        -p 9090:9090 \
-        -p 7890:7890 \
-        -p 7891:7891 \
-        -p 7892:7892 \
+        --cap-add=NET_ADMIN \
+        --cap-add=NET_RAW \
         metacubex/mihomo:latest
+    
+    # 等待几秒钟检查容器状态
+    sleep 5
+    
+    # 检查容器是否正常运行
+    if docker ps | grep -q mihomo && ! docker ps -a --filter "name=mihomo" --format "{{.Status}}" | grep -q "Restarting"; then
+        echo -e "${GREEN}✓ 容器使用macvlan网络启动成功${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ macvlan网络启动失败，尝试使用bridge网络...${PLAIN}"
         
-    if [[ $? -ne 0 ]]; then
-        handle_error "错误: 容器启动失败"
+        # 停止并删除失败的容器
+        docker stop mihomo 2>/dev/null
+        docker rm mihomo 2>/dev/null
+        
+        # 使用bridge网络重新启动
+        docker run -d \
+            --name=mihomo --restart=unless-stopped \
+            --network=bridge \
+            -p 9090:9090 \
+            -p 7890:7890 \
+            -p 7891:7891 \
+            -p 7892:7892 \
+            -v "$CONF_DIR:/root/.config/mihomo/" \
+            --cap-add=NET_ADMIN \
+            --cap-add=NET_RAW \
+            metacubex/mihomo:latest
+        
+        if [[ $? -ne 0 ]]; then
+            handle_error "错误: 容器启动失败"
+        fi
+        
+        echo -e "${GREEN}✓ 容器使用bridge网络启动成功${PLAIN}"
+        echo -e "${YELLOW}注意: 使用bridge网络，控制面板地址为: http://$(hostname -I | awk '{print $1}'):9090/ui${PLAIN}"
     fi
     
     echo -e "${GREEN}Mihomo容器已启动${PLAIN}"
@@ -375,10 +404,23 @@ start_mihomo_container() {
     # 等待容器启动并检查状态
     sleep 3
     if docker ps | grep -q mihomo; then
-        echo -e "${GREEN}容器运行状态正常${PLAIN}"
+        echo -e "${GREEN}✓ 容器运行状态正常${PLAIN}"
+        
+        # 显示访问信息
+        local container_network=$(docker inspect mihomo --format '{{.NetworkSettings.Networks}}')
+        if echo "$container_network" | grep -q "mnet"; then
+            echo -e "${GREEN}访问地址: http://$mihomo_ip:9090/ui${PLAIN}"
+        else
+            local host_ip=$(hostname -I | awk '{print $1}')
+            echo -e "${GREEN}访问地址: http://$host_ip:9090/ui${PLAIN}"
+        fi
     else
-        echo -e "${YELLOW}警告: 容器可能未正常启动，请检查日志${PLAIN}"
-        docker logs mihomo
+        echo -e "${YELLOW}警告: 容器可能未正常启动，检查日志...${PLAIN}"
+        docker logs mihomo --tail 10
+        
+        # 如果仍然失败，提供诊断建议
+        echo -e "${YELLOW}如果容器持续重启，请运行诊断脚本:${PLAIN}"
+        echo -e "${YELLOW}bash fix_container_restart.sh${PLAIN}"
     fi
 }
 
