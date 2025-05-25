@@ -97,12 +97,41 @@ handle_error() {
     exit 1
 }
 
+# 检查并安装jq
+check_and_install_jq() {
+    if ! command -v jq &> /dev/null; then
+        echo -e "${CYAN}正在安装jq...${PLAIN}"
+        if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y jq
+        elif command -v yum &> /dev/null; then
+            yum install -y jq
+        elif command -v dnf &> /dev/null; then
+            dnf install -y jq
+        elif command -v apk &> /dev/null; then
+            apk add jq
+        else
+            echo -e "${RED}错误: 无法安装jq，请手动安装后再运行此脚本${PLAIN}"
+            exit 1
+        fi
+        
+        # 验证安装
+        if command -v jq &> /dev/null; then
+            echo -e "${GREEN}jq安装成功${PLAIN}"
+        else
+            handle_error "jq安装失败"
+        fi
+    fi
+}
+
 # 状态验证函数
 validate_state() {
     if [[ ! -f "$STATE_FILE" ]]; then
         handle_error "状态文件不存在"
         return 1
     fi
+
+    # 确保jq已安装
+    check_and_install_jq
 
     # 检查状态文件版本
     local version=$(jq -r '.version // ""' "$STATE_FILE")
@@ -495,7 +524,10 @@ get_state_value() {
         return
     fi
     
-    value=$(grep -o "\"$key\": *\"[^\"]*\"" "$STATE_FILE" | cut -d'"' -f4)
+    # 确保jq已安装
+    check_and_install_jq
+    
+    value=$(jq -r ".$key // \"\"" "$STATE_FILE" 2>/dev/null)
     echo "$value"
 }
 
@@ -510,11 +542,24 @@ update_state() {
         return 1
     fi
     
-    # 使用sed更新状态值
-    sed -i "s|\"$key\": *\"[^\"]*\"|\"$key\": \"$value\"|g" "$STATE_FILE"
+    # 确保jq已安装
+    check_and_install_jq
     
-    # 更新时间戳
-    sed -i "s|\"timestamp\": *\"[^\"]*\"|\"timestamp\": \"$(date '+%Y-%m-%d %H:%M:%S')\"|g" "$STATE_FILE"
+    # 使用jq更新状态值
+    jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$STATE_FILE" > "${STATE_FILE}.tmp"
+    if [[ $? -eq 0 ]]; then
+        mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        
+        # 更新时间戳
+        jq --arg ts "$(date '+%Y-%m-%d %H:%M:%S')" '.timestamp = $ts' "$STATE_FILE" > "${STATE_FILE}.tmp"
+        if [[ $? -eq 0 ]]; then
+            mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        fi
+    else
+        echo -e "${YELLOW}警告: 状态更新失败${PLAIN}"
+        rm -f "${STATE_FILE}.tmp"
+        return 1
+    fi
 }
 
 # 查找可用的IP地址

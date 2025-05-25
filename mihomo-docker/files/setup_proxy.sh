@@ -29,6 +29,32 @@ handle_error() {
     exit 1
 }
 
+# 检查并安装jq
+check_and_install_jq() {
+    if ! command -v jq &> /dev/null; then
+        echo -e "${CYAN}正在安装jq...${PLAIN}"
+        if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y jq
+        elif command -v yum &> /dev/null; then
+            yum install -y jq
+        elif command -v dnf &> /dev/null; then
+            dnf install -y jq
+        elif command -v apk &> /dev/null; then
+            apk add jq
+        else
+            echo -e "${RED}错误: 无法安装jq，请手动安装后再运行此脚本${PLAIN}"
+            exit 1
+        fi
+        
+        # 验证安装
+        if command -v jq &> /dev/null; then
+            echo -e "${GREEN}jq安装成功${PLAIN}"
+        else
+            handle_error "jq安装失败"
+        fi
+    fi
+}
+
 # 配置信息 - 将从状态文件中读取
 SCRIPT_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
 FILES_DIR="$SCRIPT_DIR/files"
@@ -60,6 +86,9 @@ get_state_value() {
 update_state() {
     local key=$1
     local value=$2
+    
+    # 确保jq已安装
+    check_and_install_jq
     
     # 如果状态文件不存在，尝试创建它
     if [[ ! -f "$STATE_FILE" ]]; then
@@ -156,11 +185,15 @@ create_docker_network() {
     else
         echo -e "${CYAN}正在创建Docker macvlan网络...${PLAIN}"
         
+        # 获取网络信息
+        local gateway=$(ip route | grep default | awk '{print $3}')
+        local subnet=$(ip -o -4 addr show dev "$main_interface" | awk '{print $4}' | cut -d/ -f1 | head -n1 | cut -d. -f1-3).0/24
+        
         # 创建macvlan网络
         docker network create -d macvlan \
-            --subnet=$(ip route | grep default | awk '{print $3}' | cut -d. -f1-3).0/24 \
-            --gateway=$(ip route | grep default | awk '{print $3}') \
-            -o parent=$main_interface \
+            --subnet="$subnet" \
+            --gateway="$gateway" \
+            -o parent="$main_interface" \
             mnet
             
         if [[ $? -ne 0 ]]; then
@@ -172,23 +205,23 @@ create_docker_network() {
     
     # 确保主机上也有对应的macvlan接口
     echo -e "${CYAN}正在检查主机macvlan接口...${PLAIN}"
-    if ip link show | grep -q "$macvlan_interface"; then
+    if ip link show "$macvlan_interface" &>/dev/null; then
         echo -e "${YELLOW}主机macvlan接口 '$macvlan_interface' 已存在，跳过创建步骤${PLAIN}"
     else
         echo -e "${CYAN}正在创建主机macvlan接口...${PLAIN}"
         
         # 创建macvlan接口
-        ip link add $macvlan_interface link $main_interface type macvlan mode bridge
+        ip link add "$macvlan_interface" link "$main_interface" type macvlan mode bridge
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}警告: 主机macvlan接口创建失败，将尝试继续${PLAIN}"
         else
             # 配置接口IP并启用
-            ip addr add "${interface_ip}/24" dev $macvlan_interface
-            ip link set $macvlan_interface up
+            ip addr add "${interface_ip}/24" dev "$macvlan_interface"
+            ip link set "$macvlan_interface" up
             
             # 添加到mihomo_ip的路由
-            ip route add $mihomo_ip dev $macvlan_interface
+            ip route add "$mihomo_ip" dev "$macvlan_interface" 2>/dev/null
             
             echo -e "${GREEN}主机macvlan接口已创建并配置${PLAIN}"
         fi
@@ -196,7 +229,7 @@ create_docker_network() {
     
     # 设置主接口为混杂模式
     echo -e "${CYAN}正在设置主接口为混杂模式...${PLAIN}"
-    ip link set $main_interface promisc on
+    ip link set "$main_interface" promisc on
     
     # 创建持久化的混杂模式服务
     echo -e "${CYAN}正在创建混杂模式持久化服务...${PLAIN}"
@@ -220,14 +253,14 @@ EOF
     
     # 检查接口状态 - 简化接口状态输出
     echo -e "${CYAN}检查网络配置状态...${PLAIN}"
-    if ip link show $main_interface | grep -q "PROMISC"; then
+    if ip link show "$main_interface" | grep -q "PROMISC"; then
         echo -e "${GREEN}主接口已设置为混杂模式${PLAIN}"
     else
         echo -e "${RED}警告: 主接口混杂模式可能未生效${PLAIN}"
     fi
     
     # 不再显示macvlan接口详情
-    if ip link show $macvlan_interface &>/dev/null; then
+    if ip link show "$macvlan_interface" &>/dev/null; then
         echo -e "${GREEN}macvlan接口已创建${PLAIN}"
     else
         echo -e "${RED}警告: macvlan接口未找到${PLAIN}"
@@ -322,18 +355,31 @@ start_mihomo_container() {
     docker stop mihomo 2>/dev/null
     docker rm mihomo 2>/dev/null
     
-    # 启动新容器 - 按照参考脚本的格式，但不显示重复的mihomo标记
+    # 启动新容器 - 修复端口映射和网络配置
     docker run -d --privileged \
-        --name=mihomo --restart=always \
+        --name=mihomo --restart=unless-stopped \
         --network mnet --ip "$mihomo_ip" \
         -v "$CONF_DIR:/root/.config/mihomo/" \
-        metacubex/mihomo:latest &>/dev/null
+        -p 9090:9090 \
+        -p 7890:7890 \
+        -p 7891:7891 \
+        -p 7892:7892 \
+        metacubex/mihomo:latest
         
     if [[ $? -ne 0 ]]; then
         handle_error "错误: 容器启动失败"
     fi
     
     echo -e "${GREEN}Mihomo容器已启动${PLAIN}"
+    
+    # 等待容器启动并检查状态
+    sleep 3
+    if docker ps | grep -q mihomo; then
+        echo -e "${GREEN}容器运行状态正常${PLAIN}"
+    else
+        echo -e "${YELLOW}警告: 容器可能未正常启动，请检查日志${PLAIN}"
+        docker logs mihomo
+    fi
 }
 
 # 主函数
@@ -342,6 +388,9 @@ main() {
     touch "$LOG_FILE"
     chmod 644 "$LOG_FILE"
     log_message "信息" "开始执行代理机配置脚本"
+    
+    # 首先确保jq已安装
+    check_and_install_jq
     
     # 检查Docker
     if ! check_docker; then
