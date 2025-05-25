@@ -8,17 +8,19 @@
 # ====================================================================================
 # 【使用说明】
 # 
-# 如果您已下载mihomo-docker目录:
-#    cd mihomo-docker
+# 方法1 - 推荐：下载完整项目目录
+#    git clone https://github.com/wallentv/mihomo-proxy.git
+#    cd mihomo-proxy/mihomo-docker
 #    bash mihomo.sh
 #
-# 或者直接下载脚本:
-#    curl -fsSL https://raw.githubusercontent.com/mihomo-proxy/mihomo-docker/main/mihomo.sh -o mihomo.sh
+# 方法2 - 直接下载脚本（支持自动下载依赖文件）:
+#    curl -fsSL https://raw.githubusercontent.com/wallentv/mihomo-proxy/master/mihomo-docker/mihomo.sh -o mihomo.sh
 #    chmod +x mihomo.sh
 #    bash mihomo.sh
 #
-# 此脚本会自动加载files文件夹下的执行脚本和配置文件
-# 详细说明请参考同目录下的README.md文件
+# 注意：方法2需要网络连接，脚本会自动从GitHub下载必要的执行脚本和配置文件
+# 如果自动下载失败，请使用方法1或手动下载files目录下的文件
+# 详细说明请参考项目README.md文件
 # ====================================================================================
 
 # 版本信息
@@ -155,16 +157,112 @@ restore_state() {
 # 检查files目录是否存在
 check_files_dir() {
     if [[ ! -d "$FILES_DIR" ]]; then
-        echo -e "${RED}错误: files目录不存在${PLAIN}"
-        echo -e "${RED}files目录用于存放执行脚本和相关配置文件，请确保该目录存在${PLAIN}"
-        exit 1
+        echo -e "${YELLOW}files目录不存在，正在创建...${PLAIN}"
+        mkdir -p "$FILES_DIR"
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}错误: 无法创建目录 $FILES_DIR${PLAIN}"
+            exit 1
+        fi
+        echo -e "${GREEN}已创建目录: $FILES_DIR${PLAIN}"
     fi
+}
+
+# 自动下载缺失的文件
+download_missing_files() {
+    local github_base_url="https://raw.githubusercontent.com/wallentv/mihomo-proxy/master/mihomo-docker/files"
+    local required_files=("setup_proxy.sh" "setup_router.sh" "check_status.sh" "config.yaml")
+    local download_needed=0
+    
+    echo -e "${CYAN}检查必要文件...${PLAIN}"
+    
+    # 检查哪些文件缺失
+    for file in "${required_files[@]}"; do
+        if [[ ! -f "$FILES_DIR/$file" ]]; then
+            echo -e "${YELLOW}缺失文件: $file${PLAIN}"
+            download_needed=1
+        fi
+    done
+    
+    if [[ $download_needed -eq 0 ]]; then
+        echo -e "${GREEN}所有必要文件已存在${PLAIN}"
+        return 0
+    fi
+    
+    # 检查网络连接和下载工具
+    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+        echo -e "${RED}错误: 系统中没有找到curl或wget，无法下载文件${PLAIN}"
+        echo -e "${YELLOW}请手动下载以下文件到 $FILES_DIR 目录:${PLAIN}"
+        for file in "${required_files[@]}"; do
+            echo -e "${YELLOW}  - $github_base_url/$file${PLAIN}"
+        done
+        return 1
+    fi
+    
+    # 测试网络连接
+    echo -e "${CYAN}测试网络连接...${PLAIN}"
+    if command -v curl &> /dev/null; then
+        if ! curl -fsSL --connect-timeout 10 "https://raw.githubusercontent.com" &> /dev/null; then
+            echo -e "${RED}网络连接失败，无法访问GitHub${PLAIN}"
+            echo -e "${YELLOW}请检查网络连接或手动下载文件${PLAIN}"
+            return 1
+        fi
+    elif command -v wget &> /dev/null; then
+        if ! wget -q --timeout=10 --spider "https://raw.githubusercontent.com" &> /dev/null; then
+            echo -e "${RED}网络连接失败，无法访问GitHub${PLAIN}"
+            echo -e "${YELLOW}请检查网络连接或手动下载文件${PLAIN}"
+            return 1
+        fi
+    fi
+    echo -e "${GREEN}网络连接正常${PLAIN}"
+    
+    echo -e "${CYAN}正在从GitHub下载缺失的文件...${PLAIN}"
+    
+    # 下载缺失的文件
+    for file in "${required_files[@]}"; do
+        if [[ ! -f "$FILES_DIR/$file" ]]; then
+            echo -e "${CYAN}下载: $file${PLAIN}"
+            
+            local download_success=0
+            
+            # 尝试使用curl下载
+            if command -v curl &> /dev/null; then
+                if curl -fsSL "$github_base_url/$file" -o "$FILES_DIR/$file"; then
+                    download_success=1
+                fi
+            # 尝试使用wget下载
+            elif command -v wget &> /dev/null; then
+                if wget -q "$github_base_url/$file" -O "$FILES_DIR/$file"; then
+                    download_success=1
+                fi
+            fi
+            
+            if [[ $download_success -eq 1 ]]; then
+                # 为脚本文件添加执行权限
+                if [[ "$file" == *.sh ]]; then
+                    chmod +x "$FILES_DIR/$file"
+                fi
+                echo -e "${GREEN}✓ 下载成功: $file${PLAIN}"
+            else
+                echo -e "${RED}✗ 下载失败: $file${PLAIN}"
+                echo -e "${YELLOW}请手动下载: $github_base_url/$file${PLAIN}"
+                return 1
+            fi
+        fi
+    done
+    
+    echo -e "${GREEN}所有文件下载完成!${PLAIN}"
+    return 0
 }
 
 # 检查执行脚本是否存在
 check_exec_scripts() {
     # 检查files目录是否存在
     check_files_dir
+    
+    # 首先尝试自动下载缺失的文件
+    if ! download_missing_files; then
+        echo -e "${YELLOW}自动下载失败，尝试从当前目录加载文件...${PLAIN}"
+    fi
     
     # 检查所需的执行脚本
     local scripts=("$PROXY_SCRIPT" "$ROUTER_SCRIPT" "$CHECK_SCRIPT")
@@ -208,11 +306,18 @@ check_exec_scripts() {
     fi
     
     if [[ $missing -eq 1 ]]; then
-        echo -e "${RED}错误: 缺少必要的文件。请确保以下文件存在于 $FILES_DIR 目录或当前目录:${PLAIN}"
-        echo -e "${YELLOW}- setup_proxy.sh${PLAIN}"
-        echo -e "${YELLOW}- setup_router.sh${PLAIN}"
-        echo -e "${YELLOW}- check_status.sh${PLAIN}"
-        echo -e "${YELLOW}- config.yaml${PLAIN}"
+        echo -e "${RED}错误: 缺少必要的文件。${PLAIN}"
+        echo -e "${YELLOW}解决方案:${PLAIN}"
+        echo -e "${YELLOW}1. 确保网络连接正常，脚本会自动从GitHub下载${PLAIN}"
+        echo -e "${YELLOW}2. 手动下载完整的mihomo-proxy目录:${PLAIN}"
+        echo -e "${YELLOW}   git clone https://github.com/wallentv/mihomo-proxy.git${PLAIN}"
+        echo -e "${YELLOW}   cd mihomo-proxy/mihomo-docker${PLAIN}"
+        echo -e "${YELLOW}   bash mihomo.sh${PLAIN}"
+        echo -e "${YELLOW}3. 手动下载以下文件到 $FILES_DIR 目录:${PLAIN}"
+        echo -e "${YELLOW}   - setup_proxy.sh${PLAIN}"
+        echo -e "${YELLOW}   - setup_router.sh${PLAIN}"
+        echo -e "${YELLOW}   - check_status.sh${PLAIN}"
+        echo -e "${YELLOW}   - config.yaml${PLAIN}"
         return 1
     fi
     
