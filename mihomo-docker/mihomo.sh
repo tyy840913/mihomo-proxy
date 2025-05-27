@@ -492,6 +492,7 @@ init_state_file() {
   "mihomo_ip": "$INTERFACE_IP",
   "interface_ip": "$INTERFACE_IP",
   "main_interface": "$MAIN_INTERFACE",
+  "gateway_ip": "",
   "macvlan_interface": "mihomo_veth",
   "installation_stage": "初始化",
   "config_type": "preset",
@@ -597,7 +598,7 @@ find_available_ip() {
     return 1
 }
 
-# 设置Mihomo IP
+# 设置Mihomo IP和网关
 setup_mihomo_ip() {
     # 确定默认的网络接口
     local interface_ip=""
@@ -618,15 +619,50 @@ setup_mihomo_ip() {
     # 建议的IP地址
     local suggested_ip="${subnet_prefix}.4"
     
+    # 自动检测网关
+    local detected_gateway=$(ip route | grep default | awk '{print $3}' | head -n1)
+    if [[ -z "$detected_gateway" ]]; then
+        # 如果无法检测到网关，使用常见的默认网关
+        detected_gateway="${subnet_prefix}.1"
+    fi
+    
     # 显示当前检测到的网络信息
     echo -e "${CYAN}当前网络信息:${PLAIN}"
     echo -e "${YELLOW}• 网络接口: ${GREEN}$MAIN_INTERFACE${PLAIN}"
     echo -e "${YELLOW}• 接口IP地址: ${GREEN}$interface_ip${PLAIN}"
+    echo -e "${YELLOW}• 检测到的网关: ${GREEN}$detected_gateway${PLAIN}"
     echo -e "${YELLOW}• 默认子网: ${GREEN}${subnet_prefix}.0/24${PLAIN}"
     echo
     
-    # 提示用户设置IP
-    echo -e "${CYAN}请为Mihomo设置一个静态IP地址:${PLAIN}"
+    # 设置网关地址
+    echo -e "${CYAN}网关地址设置:${PLAIN}"
+    echo -e "${YELLOW}检测到的网关地址: ${GREEN}$detected_gateway${PLAIN}"
+    echo -e "${YELLOW}如果您的网络环境使用其他网关，请手动指定${PLAIN}"
+    echo -e "${YELLOW}注意: 网关地址用于配置macvlan网络，请确保准确${PLAIN}"
+    
+    local gateway_ip=""
+    read -p "请确认网关地址 [$detected_gateway]: " gateway_ip
+    gateway_ip=${gateway_ip:-$detected_gateway}
+    
+    # 验证网关IP格式
+    if ! [[ $gateway_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}网关地址格式不正确，使用检测到的网关${PLAIN}"
+        gateway_ip="$detected_gateway"
+    fi
+    
+    # 可选：测试网关连通性
+    echo -e "${CYAN}正在测试网关连通性...${PLAIN}"
+    if ping -c 1 -W 2 "$gateway_ip" &>/dev/null; then
+        echo -e "${GREEN}✓ 网关 $gateway_ip 连通正常${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ 无法ping通网关 $gateway_ip，但将继续使用此地址${PLAIN}"
+        echo -e "${YELLOW}  这可能是因为网关禁用了ping响应${PLAIN}"
+    fi
+    
+    echo
+    
+    # 设置Mihomo IP地址
+    echo -e "${CYAN}Mihomo IP地址设置:${PLAIN}"
     echo -e "${YELLOW}推荐使用子网内未使用的IP: ${GREEN}${suggested_ip}${PLAIN}"
     echo -e "${YELLOW}注意: IP地址必须与您当前设备在同一子网内${PLAIN}"
     echo -e "${YELLOW}建议使用${subnet_prefix}.X形式的地址 (X为2-254之间的数字)${PLAIN}"
@@ -646,6 +682,18 @@ setup_mihomo_ip() {
         fi
     fi
     
+    # 确保Mihomo IP和网关不冲突
+    if [[ "$mihomo_ip" == "$gateway_ip" ]]; then
+        echo -e "${RED}错误: Mihomo IP不能与网关IP相同${PLAIN}"
+        local new_suggested="${subnet_prefix}.$(($(echo $gateway_ip | cut -d. -f4) + 1))"
+        if [[ "$new_suggested" == "${subnet_prefix}.255" ]]; then
+            new_suggested="${subnet_prefix}.$(($(echo $gateway_ip | cut -d. -f4) - 1))"
+        fi
+        echo -e "${YELLOW}建议使用: $new_suggested${PLAIN}"
+        read -p "请重新输入Mihomo IP地址 [$new_suggested]: " mihomo_ip
+        mihomo_ip=${mihomo_ip:-$new_suggested}
+    fi
+    
     # 检查IP是否已被占用
     if ping -c 1 -W 1 "$mihomo_ip" &>/dev/null; then
         echo -e "${YELLOW}警告: IP地址 $mihomo_ip 可能已被占用${PLAIN}"
@@ -656,11 +704,32 @@ setup_mihomo_ip() {
         fi
     fi
     
-    # 更新状态文件
+    # 显示最终配置总结
+    echo
+    echo -e "${CYAN}配置总结:${PLAIN}"
+    echo -e "${YELLOW}• 网关地址: ${GREEN}$gateway_ip${PLAIN}"
+    echo -e "${YELLOW}• Mihomo IP: ${GREEN}$mihomo_ip${PLAIN}"
+    echo -e "${YELLOW}• 网络接口: ${GREEN}$MAIN_INTERFACE${PLAIN}"
+    echo -e "${YELLOW}• 子网范围: ${GREEN}${subnet_prefix}.0/24${PLAIN}"
+    echo
+    
+    # 更新状态文件（包括网关信息）
+    local update_success=0
     if update_state "mihomo_ip" "$mihomo_ip"; then
-        echo -e "${GREEN}Mihomo IP地址已设置为: $mihomo_ip${PLAIN}"
+        if update_state "gateway_ip" "$gateway_ip"; then
+            if update_state "installation_stage" "Step1_Completed"; then
+                update_success=1
+                echo -e "${GREEN}✓ Mihomo IP地址已设置为: $mihomo_ip${PLAIN}"
+                echo -e "${GREEN}✓ 网关地址已保存为: $gateway_ip${PLAIN}"
+            fi
+        fi
+    fi
+    
+    if [[ $update_success -eq 0 ]]; then
+        echo -e "${RED}设置配置失败${PLAIN}"
     else
-        echo -e "${RED}设置IP地址失败${PLAIN}"
+        echo -e "${GREEN}✓ 初始化配置完成！${PLAIN}"
+        echo -e "${YELLOW}下一步: 请选择 '2. 配置代理机' 继续安装${PLAIN}"
     fi
 }
 
@@ -906,6 +975,7 @@ init_setup() {
   "mihomo_ip": "",
   "interface_ip": "",
   "main_interface": "$MAIN_INTERFACE",
+  "gateway_ip": "",
   "macvlan_interface": "mihomo_veth",
   "installation_stage": "初始化",
   "config_type": "preset",

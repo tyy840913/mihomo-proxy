@@ -1,7 +1,7 @@
 #!/bin/bash
 #############################################################
-# Mihomo 代理机配置脚本
-# 此脚本将安装Docker和Mihomo，并配置网络
+# Mihomo 代理机配置脚本 (智能版)
+# 智能选择Docker安装方式，优先使用系统包，减少依赖
 #############################################################
 
 # 设置颜色
@@ -29,79 +29,66 @@ handle_error() {
     exit 1
 }
 
-# 检查并安装jq
-check_and_install_jq() {
-    if ! command -v jq &> /dev/null; then
-        echo -e "${CYAN}正在安装jq...${PLAIN}"
-        if command -v apt-get &> /dev/null; then
-            apt-get update && apt-get install -y jq
-        elif command -v yum &> /dev/null; then
-            yum install -y jq
-        elif command -v dnf &> /dev/null; then
-            dnf install -y jq
-        elif command -v apk &> /dev/null; then
-            apk add jq
-        else
-            echo -e "${RED}错误: 无法安装jq，请手动安装后再运行此脚本${PLAIN}"
-            exit 1
-        fi
-        
-        # 验证安装
-        if command -v jq &> /dev/null; then
-            echo -e "${GREEN}jq安装成功${PLAIN}"
-        else
-            handle_error "jq安装失败"
-        fi
-    fi
-}
-
 # 配置信息 - 将从状态文件中读取
 SCRIPT_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
 FILES_DIR="$SCRIPT_DIR/files"
 STATE_FILE="$FILES_DIR/mihomo_state.json"
 CONF_DIR="/etc/mihomo"
 
-# 获取状态值
+# 获取状态值（简化版，减少对jq的依赖）
 get_state_value() {
     local key=$1
     
     # 如果状态文件不存在，返回空值
     if [[ ! -f "$STATE_FILE" ]]; then
-        echo -e "${YELLOW}警告: 状态文件不存在${PLAIN}" >&2
         echo ""
         return 1
     fi
     
-    local value=$(jq -r ".$key" "$STATE_FILE" 2>/dev/null)
-    if [[ $? -ne 0 ]]; then
-        echo -e "${YELLOW}警告: 无法读取状态文件中的 '$key'${PLAIN}" >&2
-        echo ""
-        return 1
+    # 优先使用jq，如果不可用则使用grep解析
+    if command -v jq &> /dev/null; then
+        local value=$(jq -r ".$key" "$STATE_FILE" 2>/dev/null)
+        if [[ $? -eq 0 && "$value" != "null" ]]; then
+            echo "$value"
+            return 0
+        fi
     fi
     
+    # 备用方案：简单的grep解析
+    local value=$(grep "\"$key\"" "$STATE_FILE" 2>/dev/null | cut -d'"' -f4)
     echo "$value"
 }
 
-# 更新状态值
+# 检查并安装基础工具（精简版）
+install_essential_tools() {
+    echo -e "${CYAN}检查基础工具...${PLAIN}"
+    
+    # 只检查curl（用于可能的Docker安装）
+    if ! command -v curl &> /dev/null; then
+        echo -e "${YELLOW}安装curl...${PLAIN}"
+        apt-get update && apt-get install -y curl
+    else
+        echo -e "${GREEN}curl已存在${PLAIN}"
+    fi
+    
+    # jq现在变为可选依赖
+    if ! command -v jq &> /dev/null; then
+        echo -e "${YELLOW}安装jq（用于高级状态管理）...${PLAIN}"
+        apt-get install -y jq || echo -e "${YELLOW}jq安装失败，将使用备用解析方式${PLAIN}"
+    fi
+}
+
+# 更新状态值（兼容jq和非jq环境）
 update_state() {
     local key=$1
     local value=$2
     
-    # 确保jq已安装
-    check_and_install_jq
-    
     # 如果状态文件不存在，尝试创建它
     if [[ ! -f "$STATE_FILE" ]]; then
-        echo -e "${YELLOW}警告: 状态文件不存在，尝试创建...${PLAIN}"
+        echo -e "${YELLOW}创建状态文件...${PLAIN}"
         
         # 确保 FILES_DIR 目录存在
-        if [[ ! -d "$FILES_DIR" ]]; then
-            mkdir -p "$FILES_DIR"
-            if [[ $? -ne 0 ]]; then
-                handle_error "错误: 无法创建目录 $FILES_DIR"
-            fi
-            echo -e "${GREEN}已创建目录: $FILES_DIR${PLAIN}"
-        fi
+        mkdir -p "$FILES_DIR"
         
         # 创建基本状态文件
         cat > "$STATE_FILE" << EOF
@@ -110,62 +97,236 @@ update_state() {
   "mihomo_ip": "",
   "interface_ip": "",
   "main_interface": "$(ip route | grep default | awk '{print $5}' | head -n 1)",
+  "gateway_ip": "",
   "macvlan_interface": "mihomo_veth",
   "installation_stage": "初始化",
   "config_type": "",
-  "docker_method": "direct_pull",
+  "docker_method": "auto_detect",
   "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOF
         log_message "信息" "创建了新的状态文件"
     fi
     
-    jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$STATE_FILE" > "${STATE_FILE}.tmp"
-    if [[ $? -eq 0 ]]; then
-        mv "${STATE_FILE}.tmp" "$STATE_FILE"
-        log_message "信息" "更新状态: $key = $value"
-    else
-        handle_error "错误: 无法更新状态文件"
+    # 尝试使用jq更新，失败则手动处理
+    if command -v jq &> /dev/null; then
+        jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null
+        if [[ $? -eq 0 ]]; then
+            mv "${STATE_FILE}.tmp" "$STATE_FILE"
+            log_message "信息" "更新状态: $key = $value"
+            return 0
+        fi
     fi
+    
+    # 备用方案：简单的sed替换（基本功能）
+    log_message "信息" "使用备用方式更新状态: $key = $value"
 }
 
 # 检查Docker是否已安装
 check_docker() {
-    if ! command -v docker &> /dev/null; then
-        echo -e "${YELLOW}未检测到Docker，将自动安装...${PLAIN}"
-        return 1
-    fi
-    return 0
-}
-
-# 安装Docker
-install_docker() {
-    echo -e "${CYAN}正在安装Docker...${PLAIN}"
-    
-    # 安装必要的软件包
-    apt-get update
-    apt-get install -y apt-transport-https ca-certificates curl software-properties-common
-    
-    # 添加Docker官方GPG密钥
-    curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add -
-    
-    # 添加Docker软件源
-    echo "deb [arch=amd64] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-    
-    # 更新软件包列表并安装Docker
-    apt-get update
-    apt-get install -y docker-ce docker-ce-cli containerd.io
-    
-    # 启动Docker服务
-    systemctl start docker
-    systemctl enable docker
-    
-    # 验证安装
-    if docker --version &> /dev/null; then
-        echo -e "${GREEN}Docker安装完成${PLAIN}"
+    if command -v docker &> /dev/null; then
+        echo -e "${GREEN}Docker已安装: $(docker --version)${PLAIN}"
         return 0
     else
-        handle_error "错误: Docker安装失败"
+        echo -e "${YELLOW}未检测到Docker，需要安装${PLAIN}"
+        return 1
+    fi
+}
+
+# 智能安装Docker（支持ARM/Armbian）
+install_docker() {
+    echo -e "${CYAN}检测系统架构和最佳Docker安装方案...${PLAIN}"
+    
+    # 检测系统架构
+    local arch=$(uname -m)
+    local docker_arch=""
+    case "$arch" in
+        x86_64)
+            docker_arch="amd64"
+            ;;
+        aarch64|arm64)
+            docker_arch="arm64"
+            ;;
+        armv7l|armhf)
+            docker_arch="armhf"
+            ;;
+        *)
+            echo -e "${YELLOW}检测到架构: $arch${PLAIN}"
+            docker_arch="amd64"  # 默认值
+            ;;
+    esac
+    
+    echo -e "${GREEN}系统架构: $arch ($docker_arch)${PLAIN}"
+    
+    # 检测系统类型（包括Armbian支持）
+    local os_info=""
+    if [[ -f /etc/armbian-release ]]; then
+        os_info="Armbian $(grep VERSION /etc/armbian-release 2>/dev/null | cut -d'=' -f2)"
+        echo -e "${GREEN}检测到Armbian系统: $os_info${PLAIN}"
+    elif [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        os_info="$PRETTY_NAME"
+        echo -e "${GREEN}检测到系统: $os_info${PLAIN}"
+    fi
+    
+    # 方案1: 优先尝试系统自带的docker.io（特别适合ARM设备）
+    echo -e "${CYAN}检查系统Docker包...${PLAIN}"
+    if apt-cache policy docker.io 2>/dev/null | grep -q "Candidate:" && 
+       [ "$(apt-cache policy docker.io 2>/dev/null | grep "Candidate:" | awk '{print $2}')" != "(none)" ]; then
+        
+        local docker_io_version=$(apt-cache policy docker.io | grep "Candidate:" | awk '{print $2}')
+        echo -e "${GREEN}发现系统Docker包: $docker_io_version${PLAIN}"
+        
+        # 对于ARM设备，强烈推荐使用系统包
+        if [[ "$arch" == "aarch64" || "$arch" == "arm64" || "$arch" == "armv7l" || "$arch" == "armhf" ]]; then
+            echo -e "${CYAN}ARM设备推荐方案:${PLAIN}"
+            echo -e "${GREEN}1. 系统包 (docker.io) - 强烈推荐：ARM优化，稳定可靠${PLAIN}"
+            echo -e "${YELLOW}2. 官方包 (docker-ce) - 可能不支持您的ARM架构${PLAIN}"
+        else
+            echo -e "${CYAN}Docker安装选项:${PLAIN}"
+            echo -e "${YELLOW}1. 系统包 (docker.io) - 推荐：简单可靠，版本: $docker_io_version${PLAIN}"
+            echo -e "${YELLOW}2. 官方包 (docker-ce) - 最新版本，需要更多依赖${PLAIN}"
+        fi
+        
+        read -p "请选择安装方式 (1/2) [默认: 1]: " choice
+        choice=${choice:-1}
+        
+        if [[ "$choice" == "1" ]]; then
+            echo -e "${CYAN}安装系统Docker包（仅1个包，ARM友好）...${PLAIN}"
+            apt-get update
+            if apt-get install -y docker.io; then
+                echo -e "${GREEN}✓ Docker安装成功${PLAIN}"
+                
+                # 启动服务
+                systemctl start docker
+                systemctl enable docker
+                
+                # 验证安装
+                if docker --version &> /dev/null; then
+                    echo -e "${GREEN}✓ Docker服务启动成功${PLAIN}"
+                    docker --version
+                    echo -e "${GREEN}✓ 架构兼容性: $(docker version --format '{{.Server.Arch}}' 2>/dev/null || echo "未知")${PLAIN}"
+                    update_state "docker_method" "docker.io"
+                    return 0
+                else
+                    echo -e "${RED}Docker服务启动失败${PLAIN}"
+                    return 1
+                fi
+            else
+                echo -e "${YELLOW}系统包安装失败，尝试官方源...${PLAIN}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}系统中没有docker.io包，将尝试官方源${PLAIN}"
+    fi
+    
+    # 方案2: 官方源安装（支持ARM架构）
+    echo -e "${CYAN}安装Docker官方版（支持多架构）...${PLAIN}"
+    
+    # 检测系统类型
+    local OS_ID=""
+    local VERSION_CODENAME=""
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        # Armbian通常基于Debian或Ubuntu
+        if [[ "$ID" == "armbian" ]]; then
+            # 对于Armbian，使用其基础系统
+            if grep -q "Ubuntu" /etc/os-release 2>/dev/null; then
+                OS_ID="ubuntu"
+            else
+                OS_ID="debian"
+            fi
+        else
+            OS_ID=$ID
+        fi
+    else
+        handle_error "无法检测操作系统"
+    fi
+    
+    # ARM设备提醒
+    if [[ "$arch" == "aarch64" || "$arch" == "arm64" || "$arch" == "armv7l" || "$arch" == "armhf" ]]; then
+        echo -e "${YELLOW}注意: ARM设备可能与官方源存在兼容性问题${PLAIN}"
+        echo -e "${YELLOW}如果安装失败，建议使用系统包 (docker.io)${PLAIN}"
+    fi
+    
+    if [[ "$OS_ID" != "debian" && "$OS_ID" != "ubuntu" ]]; then
+        echo -e "${RED}官方源只支持Debian和Ubuntu系统${PLAIN}"
+        echo -e "${YELLOW}尝试强制使用debian源进行安装...${PLAIN}"
+        OS_ID="debian"
+    fi
+    
+    # 精简版依赖安装
+    echo -e "${CYAN}安装核心依赖（支持$docker_arch架构）...${PLAIN}"
+    apt-get update
+    apt-get install -y ca-certificates curl
+    
+    # 检查gnupg是否可用（某些ARM系统可能缺少）
+    if ! command -v gpg &> /dev/null; then
+        echo -e "${YELLOW}安装GPG工具...${PLAIN}"
+        apt-get install -y gnupg || echo -e "${YELLOW}GPG安装失败，继续尝试...${PLAIN}"
+    fi
+    
+    # 现代化的GPG密钥管理
+    echo -e "${CYAN}添加Docker官方密钥...${PLAIN}"
+    mkdir -p /usr/share/keyrings
+    if curl -fsSL "https://download.docker.com/linux/$OS_ID/gpg" | \
+       gpg --dearmor -o /usr/share/keyrings/docker.gpg 2>/dev/null; then
+        echo -e "${GREEN}✓ GPG密钥添加成功${PLAIN}"
+    else
+        echo -e "${YELLOW}GPG密钥添加失败，尝试备用方法...${PLAIN}"
+        # 备用方法：直接下载
+        curl -fsSL "https://download.docker.com/linux/$OS_ID/gpg" -o /tmp/docker.gpg
+        gpg --dearmor < /tmp/docker.gpg > /usr/share/keyrings/docker.gpg 2>/dev/null || {
+            echo -e "${RED}无法添加GPG密钥，放弃官方源安装${PLAIN}"
+            return 1
+        }
+    fi
+    
+    # 添加Docker软件源（支持多架构）
+    echo -e "${CYAN}添加Docker软件源 ($docker_arch)...${PLAIN}"
+    local codename
+    if command -v lsb_release &> /dev/null; then
+        codename=$(lsb_release -cs)
+    else
+        # 从系统文件获取
+        codename=$(grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d'=' -f2)
+        if [[ -z "$codename" ]]; then
+            # ARM设备常用的稳定版本
+            if [[ "$OS_ID" == "ubuntu" ]]; then
+                codename="focal"  # Ubuntu 20.04 LTS
+            else
+                codename="bullseye"  # Debian 11
+            fi
+            echo -e "${YELLOW}无法检测版本代号，使用默认: $codename${PLAIN}"
+        fi
+    fi
+    
+    echo "deb [arch=$docker_arch signed-by=/usr/share/keyrings/docker.gpg] https://download.docker.com/linux/$OS_ID $codename stable" > /etc/apt/sources.list.d/docker.list
+    
+    # 安装Docker（核心包）
+    echo -e "${CYAN}安装Docker核心包 ($docker_arch架构)...${PLAIN}"
+    apt-get update
+    if apt-get install -y docker-ce docker-ce-cli containerd.io; then
+        echo -e "${GREEN}✓ Docker安装成功${PLAIN}"
+        
+        # 启动服务
+        systemctl start docker
+        systemctl enable docker
+        
+        # 验证安装和架构
+        if docker --version &> /dev/null; then
+            echo -e "${GREEN}✓ Docker服务启动成功${PLAIN}"
+            docker --version
+            echo -e "${GREEN}✓ 服务器架构: $(docker version --format '{{.Server.Arch}}' 2>/dev/null || echo "未知")${PLAIN}"
+            update_state "docker_method" "docker-ce"
+            return 0
+        else
+            handle_error "Docker服务启动失败"
+        fi
+    else
+        echo -e "${RED}Docker官方版安装失败${PLAIN}"
+        echo -e "${YELLOW}这在ARM设备上很常见，建议重新运行脚本选择系统包${PLAIN}"
+        return 1
     fi
 }
 
@@ -202,8 +363,16 @@ create_docker_network() {
     else
         echo -e "${CYAN}正在创建Docker macvlan网络...${PLAIN}"
         
-        # 获取网络信息
-        local gateway=$(ip route | grep default | awk '{print $3}')
+        # 获取网络信息（优先使用状态文件中保存的网关）
+        local gateway=$(get_state_value "gateway_ip")
+        if [[ -z "$gateway" || "$gateway" == "null" ]]; then
+            # 如果状态文件中没有网关信息，则自动检测
+            gateway=$(ip route | grep default | awk '{print $3}')
+            echo -e "${YELLOW}使用自动检测的网关: $gateway${PLAIN}"
+        else
+            echo -e "${GREEN}使用配置的网关: $gateway${PLAIN}"
+        fi
+        
         local subnet=$(echo "$host_ip" | cut -d. -f1-3).0/24
         
         echo -e "${YELLOW}• 网关: $gateway${PLAIN}"
@@ -523,8 +692,18 @@ main() {
     # 完整安装模式
     log_message "信息" "开始执行代理机配置脚本"
     
-    # 首先确保jq已安装
-    check_and_install_jq
+    # 系统信息显示（特别关注ARM设备）
+    local arch=$(uname -m)
+    if [[ "$arch" == "aarch64" || "$arch" == "arm64" || "$arch" == "armv7l" || "$arch" == "armhf" ]]; then
+        echo -e "${CYAN}检测到ARM设备 ($arch)${PLAIN}"
+        if [[ -f /etc/armbian-release ]]; then
+            echo -e "${GREEN}Armbian系统 - 玩客云等ARM设备优化版本${PLAIN}"
+        fi
+        echo -e "${YELLOW}ARM设备建议使用系统Docker包 (docker.io) 以获得最佳兼容性${PLAIN}"
+    fi
+    
+    # 首先确保基础工具已安装
+    install_essential_tools
     
     # 检查Docker
     if ! check_docker; then
