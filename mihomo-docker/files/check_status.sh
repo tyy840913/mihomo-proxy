@@ -223,13 +223,32 @@ echo -e "${CYAN}检查连接性:${PLAIN}"
 if ping -c 1 -W 1 $MIHOMO_IP &> /dev/null; then
     echo -e "Mihomo IP可访问性: ${GREEN}可访问${PLAIN}"
     
-    # 检查控制面板
-    if curl -s -m 3 http://$MIHOMO_IP:9090 &> /dev/null; then
-        echo -e "控制面板: ${GREEN}可访问${PLAIN}"
+    # 检查控制面板 - 针对macvlan网络优化
+    # 首先检查容器是否在macvlan网络中
+    CONTAINER_NETWORK=$(docker inspect mihomo --format '{{range .NetworkSettings.Networks}}{{.NetworkMode}}{{end}}' 2>/dev/null)
+    CONTAINER_IP=$(docker inspect mihomo --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+    
+    if [[ -n "$CONTAINER_IP" && "$CONTAINER_IP" == "$MIHOMO_IP" ]]; then
+        # 容器在macvlan网络中，宿主机无法直接访问
+        echo -e "控制面板: ${GREEN}运行中 (macvlan网络)${PLAIN}"
         echo -e "控制面板地址: ${GREEN}http://$MIHOMO_IP:9090/ui${PLAIN}"
+        echo -e "${YELLOW}注意: 由于macvlan网络隔离，请从其他设备访问控制面板${PLAIN}"
+        
+        # 检查容器内部服务是否正常
+        if docker exec mihomo netstat -tlnp 2>/dev/null | grep -q ":9090"; then
+            echo -e "控制面板服务: ${GREEN}正常监听${PLAIN}"
+        else
+            echo -e "控制面板服务: ${YELLOW}可能未启动${PLAIN}"
+        fi
     else
-        echo -e "控制面板: ${RED}无法访问${PLAIN}"
-        echo -e "${YELLOW}请检查Mihomo容器是否正常启动${PLAIN}"
+        # 容器在bridge网络中，可以直接访问
+        if curl -s -m 3 http://$MIHOMO_IP:9090 &> /dev/null; then
+            echo -e "控制面板: ${GREEN}可访问${PLAIN}"
+            echo -e "控制面板地址: ${GREEN}http://$MIHOMO_IP:9090/ui${PLAIN}"
+        else
+            echo -e "控制面板: ${RED}无法访问${PLAIN}"
+            echo -e "${YELLOW}请检查Mihomo容器是否正常启动${PLAIN}"
+        fi
     fi
 else
     echo -e "Mihomo IP可访问性: ${RED}无法访问${PLAIN}"
@@ -274,10 +293,34 @@ echo -e "${GREEN}=================================================${PLAIN}"
 echo -e "${GREEN}           Mihomo 状态检查完成${PLAIN}"
 echo -e "${GREEN}=================================================${PLAIN}"
 
-if docker ps | grep -q mihomo && ip link show | grep -q $MACVLAN_INTERFACE && curl -s -m 3 http://$MIHOMO_IP:9090 &> /dev/null; then
-    echo -e "${GREEN}Mihomo代理运行正常!${PLAIN}"
-    echo -e "${GREEN}控制面板地址: http://$MIHOMO_IP:9090/ui${PLAIN}"
-    echo -e "${YELLOW}请确保您的路由器已正确配置指向此代理机${PLAIN}"
+# 智能判断容器状态 - 支持macvlan和bridge网络
+CONTAINER_RUNNING=$(docker ps | grep -q mihomo && echo "true" || echo "false")
+MACVLAN_CONFIGURED=$(ip link show | grep -q $MACVLAN_INTERFACE && echo "true" || echo "false")
+CONTAINER_IP=$(docker inspect mihomo --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+
+if [[ "$CONTAINER_RUNNING" == "true" ]]; then
+    if [[ -n "$CONTAINER_IP" && "$CONTAINER_IP" == "$MIHOMO_IP" ]]; then
+        # macvlan网络模式
+        if [[ "$MACVLAN_CONFIGURED" == "true" ]]; then
+            echo -e "${GREEN}Mihomo代理运行正常! (macvlan网络)${PLAIN}"
+            echo -e "${GREEN}控制面板地址: http://$MIHOMO_IP:9090/ui${PLAIN}"
+            echo -e "${YELLOW}请从其他设备访问控制面板（macvlan网络隔离）${PLAIN}"
+            echo -e "${YELLOW}请确保您的路由器已正确配置指向此代理机${PLAIN}"
+        else
+            echo -e "${YELLOW}Mihomo容器运行中，但macvlan接口未配置${PLAIN}"
+            echo -e "${YELLOW}请检查网络配置${PLAIN}"
+        fi
+    else
+        # bridge网络模式
+        if curl -s -m 3 http://$MIHOMO_IP:9090 &> /dev/null; then
+            echo -e "${GREEN}Mihomo代理运行正常! (bridge网络)${PLAIN}"
+            echo -e "${GREEN}控制面板地址: http://$MIHOMO_IP:9090/ui${PLAIN}"
+            echo -e "${YELLOW}请确保您的路由器已正确配置指向此代理机${PLAIN}"
+        else
+            echo -e "${YELLOW}Mihomo容器运行中，但控制面板无法访问${PLAIN}"
+            echo -e "${YELLOW}请检查容器配置和网络设置${PLAIN}"
+        fi
+    fi
 else
     echo -e "${RED}Mihomo代理存在问题!${PLAIN}"
     echo -e "${YELLOW}请根据以上检查结果修复问题${PLAIN}"
