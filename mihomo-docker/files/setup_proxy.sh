@@ -565,6 +565,8 @@ start_mihomo_container() {
             --restart=unless-stopped \
             --network mnet \
             --ip "$mihomo_ip" \
+            --dns=8.8.8.8 \
+            --dns=1.1.1.1 \
             -v "$CONF_DIR:/root/.config/mihomo" \
             --cap-add=NET_ADMIN \
             --cap-add=NET_RAW \
@@ -602,6 +604,8 @@ start_mihomo_container() {
             --name=mihomo \
             --restart=unless-stopped \
             --network=bridge \
+            --dns=8.8.8.8 \
+            --dns=1.1.1.1 \
             -p 9090:9090 \
             -p 7890:7890 \
             -p 7891:7891 \
@@ -686,6 +690,37 @@ main() {
         
         echo -e "${GREEN}Mihomo服务重启完成！${PLAIN}"
         log_message "信息" "代理机重启脚本执行完成"
+        return 0
+    fi
+    
+    if [[ "$mode" == "reset" ]]; then
+        log_message "信息" "开始执行配置重置脚本"
+        echo -e "${CYAN}正在重置Mihomo配置...${PLAIN}"
+        
+        # 1. 备份当前配置文件
+        if [[ -f "/etc/mihomo/config.yaml" ]]; then
+            local backup_file="/etc/mihomo/config.yaml.backup.$(date '+%Y%m%d_%H%M%S')"
+            echo -e "${CYAN}正在备份当前配置文件...${PLAIN}"
+            cp "/etc/mihomo/config.yaml" "$backup_file" 2>/dev/null
+            if [[ $? -eq 0 ]]; then
+                echo -e "${GREEN}✓ 配置文件已备份到: $backup_file${PLAIN}"
+            else
+                echo -e "${YELLOW}⚠ 配置文件备份失败，继续重置...${PLAIN}"
+            fi
+        fi
+        
+        # 2. 删除当前配置文件
+        echo -e "${CYAN}正在删除当前配置文件...${PLAIN}"
+        rm -f "/etc/mihomo/config.yaml" 2>/dev/null
+        
+        # 3. 复制新的配置文件
+        copy_config_file
+        
+        # 4. 重启容器
+        start_mihomo_container
+        
+        echo -e "${GREEN}配置重置完成！${PLAIN}"
+        log_message "信息" "配置重置脚本执行完成"
         return 0
     fi
     
