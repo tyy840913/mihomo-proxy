@@ -523,7 +523,7 @@ copy_config_file() {
         cd "$tmp_dir"
         
         # 下载并解压UI包
-        if ! wget https://github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz; then
+        if ! wget --timeout=30 --tries=3 https://github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz; then
             echo -e "${RED}警告: UI包下载失败，将使用无UI模式${PLAIN}"
         else
             tar -xzf compressed-dist.tgz -C "$CONF_DIR/ui"
@@ -533,6 +533,65 @@ copy_config_file() {
         # 清理临时文件
         cd - > /dev/null
         rm -rf "$tmp_dir"
+    fi
+    
+    # 预下载GeoIP数据库（关键优化）
+    echo -e "${CYAN}正在预下载GeoIP数据库...${PLAIN}"
+    mkdir -p "$CONF_DIR"
+    
+    # 检查是否已存在GeoIP文件
+    if [[ -f "$CONF_DIR/Country.mmdb" ]]; then
+        echo -e "${YELLOW}GeoIP数据库已存在，跳过下载${PLAIN}"
+    else
+        echo -e "${CYAN}正在下载GeoIP数据库（避免容器启动时下载失败）...${PLAIN}"
+        
+        # 尝试多个下载源
+        local geoip_downloaded=0
+        local geoip_sources=(
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
+            "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"
+            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
+        )
+        
+        for source in "${geoip_sources[@]}"; do
+            echo -e "${CYAN}尝试从 $source 下载...${PLAIN}"
+            if wget --timeout=60 --tries=2 -O "$CONF_DIR/Country.mmdb" "$source"; then
+                echo -e "${GREEN}✓ GeoIP数据库下载成功${PLAIN}"
+                geoip_downloaded=1
+                break
+            else
+                echo -e "${YELLOW}⚠ 从 $source 下载失败，尝试下一个源...${PLAIN}"
+                rm -f "$CONF_DIR/Country.mmdb" 2>/dev/null
+            fi
+        done
+        
+        if [[ $geoip_downloaded -eq 0 ]]; then
+            echo -e "${YELLOW}⚠ 所有GeoIP下载源都失败，容器启动时将自动下载${PLAIN}"
+            echo -e "${YELLOW}⚠ 如果容器启动失败，请检查网络连接或手动下载GeoIP文件${PLAIN}"
+        fi
+    fi
+    
+    # 预下载GeoSite数据库（可选）
+    echo -e "${CYAN}正在预下载GeoSite数据库...${PLAIN}"
+    if [[ ! -f "$CONF_DIR/geosite.dat" ]]; then
+        echo -e "${CYAN}正在下载GeoSite数据库...${PLAIN}"
+        
+        local geosite_sources=(
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+        )
+        
+        for source in "${geosite_sources[@]}"; do
+            if wget --timeout=60 --tries=2 -O "$CONF_DIR/geosite.dat" "$source"; then
+                echo -e "${GREEN}✓ GeoSite数据库下载成功${PLAIN}"
+                break
+            else
+                echo -e "${YELLOW}⚠ GeoSite下载失败，尝试下一个源...${PLAIN}"
+                rm -f "$CONF_DIR/geosite.dat" 2>/dev/null
+            fi
+        done
+    else
+        echo -e "${YELLOW}GeoSite数据库已存在，跳过下载${PLAIN}"
     fi
     
     echo -e "${GREEN}配置设置完成${PLAIN}"
