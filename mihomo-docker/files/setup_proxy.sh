@@ -412,6 +412,9 @@ create_docker_network() {
                 ip link set "$macvlan_interface" up
                 echo -e "${GREEN}✓ macvlan接口配置完成 (IP: $host_macvlan_ip)${PLAIN}"
                 
+                # 更新状态文件中的interface_ip字段
+                update_state "interface_ip" "$host_macvlan_ip"
+                
                 # 添加到mihomo_ip的路由
                 ip route add "$mihomo_ip/32" dev "$macvlan_interface" 2>/dev/null
             else
@@ -421,6 +424,14 @@ create_docker_network() {
         else
             echo -e "${YELLOW}⚠ 主机macvlan接口创建失败，将使用bridge网络${PLAIN}"
             return 0
+        fi
+    else
+        # 接口已存在，检查是否需要更新状态文件
+        local existing_ip=$(ip -4 addr show "$macvlan_interface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+        if [[ -n "$existing_ip" ]]; then
+            echo -e "${GREEN}现有接口IP: $existing_ip${PLAIN}"
+            # 更新状态文件中的interface_ip字段
+            update_state "interface_ip" "$existing_ip"
         fi
     fi
     
@@ -464,7 +475,13 @@ create_config_dir() {
         handle_error "错误: 配置目录创建失败"
     fi
     
-    echo -e "${GREEN}配置目录已创建${PLAIN}"
+    # 确保规则文件目录也存在
+    mkdir -p "$CONF_DIR/ruleset"
+    if [[ $? -ne 0 ]]; then
+        handle_error "错误: 规则文件目录创建失败"
+    fi
+    
+    echo -e "${GREEN}配置目录和规则文件目录已创建${PLAIN}"
 }
 
 # 复制配置文件
