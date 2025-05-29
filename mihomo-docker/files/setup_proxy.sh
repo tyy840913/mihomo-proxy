@@ -394,9 +394,15 @@ create_docker_network() {
     # 简化主机macvlan接口配置
     echo -e "${CYAN}正在配置主机网络接口...${PLAIN}"
     
-    # 检查macvlan接口是否已存在
     if ip link show "$macvlan_interface" &>/dev/null; then
         echo -e "${YELLOW}主机macvlan接口 '$macvlan_interface' 已存在${PLAIN}"
+        # 接口已存在，检查是否需要更新状态文件
+        local existing_ip=$(ip -4 addr show "$macvlan_interface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+        if [[ -n "$existing_ip" ]]; then
+            echo -e "${GREEN}现有接口IP: $existing_ip${PLAIN}"
+            # 更新状态文件中的interface_ip字段
+            update_state "interface_ip" "$existing_ip"
+        fi
     else
         echo -e "${CYAN}正在创建主机macvlan接口...${PLAIN}"
         
@@ -424,14 +430,6 @@ create_docker_network() {
         else
             echo -e "${YELLOW}⚠ 主机macvlan接口创建失败，将使用bridge网络${PLAIN}"
             return 0
-        fi
-    else
-        # 接口已存在，检查是否需要更新状态文件
-        local existing_ip=$(ip -4 addr show "$macvlan_interface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
-        if [[ -n "$existing_ip" ]]; then
-            echo -e "${GREEN}现有接口IP: $existing_ip${PLAIN}"
-            # 更新状态文件中的interface_ip字段
-            update_state "interface_ip" "$existing_ip"
         fi
     fi
     
