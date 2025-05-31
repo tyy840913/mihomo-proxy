@@ -591,12 +591,11 @@ start_mihomo_container() {
         # 使用macvlan网络启动
         if docker run -d \
             --name=mihomo \
+            --privileged \
             --restart=unless-stopped \
             --network mnet \
             --ip "$mihomo_ip" \
             -v "$CONF_DIR:/root/.config/mihomo" \
-            --cap-add=NET_ADMIN \
-            --cap-add=NET_RAW \
             metacubex/mihomo:latest >/dev/null 2>&1; then
             
             # 等待容器启动
@@ -636,8 +635,7 @@ start_mihomo_container() {
             -p 7891:7891 \
             -p 7892:7892 \
             -v "$CONF_DIR:/root/.config/mihomo" \
-            --cap-add=NET_ADMIN \
-            --cap-add=NET_RAW \
+            --privileged \
             metacubex/mihomo:latest >/dev/null 2>&1; then
             
             # 等待容器启动
