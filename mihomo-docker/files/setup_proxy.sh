@@ -95,7 +95,6 @@ update_state() {
 {
   "version": "1.0",
   "mihomo_ip": "",
-  "interface_ip": "",
   "main_interface": "$(ip route | grep default | awk '{print $5}' | head -n 1)",
   "gateway_ip": "",
   "macvlan_interface": "mihomo_veth",
@@ -353,7 +352,35 @@ create_docker_network() {
         return 0
     fi
     
-    # 尝试创建Docker macvlan网络
+    # 首先设置主接口为混杂模式（必须在创建macvlan网络之前）
+    echo -e "${CYAN}正在设置主接口为混杂模式...${PLAIN}"
+    if ip link set "$main_interface" promisc on; then
+        echo -e "${GREEN}✓ 主接口混杂模式已启用${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ 主接口混杂模式设置失败${PLAIN}"
+    fi
+    
+    # 创建持久化的混杂模式服务
+    echo -e "${CYAN}正在创建混杂模式持久化服务...${PLAIN}"
+    cat > "/etc/systemd/system/promisc-$main_interface.service" << EOF
+[Unit]
+Description=Set $main_interface interface to promiscuous mode
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ip link set $main_interface promisc on
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # 启用服务
+    systemctl daemon-reload
+    systemctl enable "promisc-$main_interface.service" 2>/dev/null
+    
+    # 然后创建Docker macvlan网络
     echo -e "${CYAN}正在检查Docker macvlan网络...${PLAIN}"
     
     if docker network ls | grep -q mnet; then
@@ -388,34 +415,6 @@ create_docker_network() {
             return 0
         fi
     fi
-    
-    # 设置主接口为混杂模式
-    echo -e "${CYAN}正在设置主接口为混杂模式...${PLAIN}"
-    if ip link set "$main_interface" promisc on; then
-        echo -e "${GREEN}✓ 主接口混杂模式已启用${PLAIN}"
-    else
-        echo -e "${YELLOW}⚠ 主接口混杂模式设置失败${PLAIN}"
-    fi
-    
-    # 创建持久化的混杂模式服务
-    echo -e "${CYAN}正在创建混杂模式持久化服务...${PLAIN}"
-    cat > "/etc/systemd/system/promisc-$main_interface.service" << EOF
-[Unit]
-Description=Set $main_interface interface to promiscuous mode
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/ip link set $main_interface promisc on
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # 启用服务
-    systemctl daemon-reload
-    systemctl enable "promisc-$main_interface.service" 2>/dev/null
     
     echo -e "${GREEN}✓ 网络配置完成${PLAIN}"
 }
