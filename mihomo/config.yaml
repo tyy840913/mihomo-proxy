@@ -236,6 +236,8 @@ proxies:
     alterId: 0
     cipher: auto
 
+  - { name: netflix, type: ss, server: chiyu-5g.huawei-cloud.vip, port: 36977, cipher: chacha20-ietf-poly1305, password: 303f411b-36c8-4d99-913e-250a12fbfa61, udp: true }
+
 # 代理分组（让你可以选择走直连还是代理）
 proxy-groups:
   # 手动选择代理组
@@ -244,6 +246,7 @@ proxy-groups:
     proxies:
       - dmit-hy2 # Hysteria2代理
       - dmit-vmess # Vmess代理
+      - netflix # Netflix代理
       - DIRECT # 直连选项
 
   # 自动测速选择最快的代理
