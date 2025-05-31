@@ -334,8 +334,6 @@ install_docker() {
 create_docker_network() {
     local mihomo_ip=$(get_state_value "mihomo_ip")
     local main_interface=$(get_state_value "main_interface")
-    local macvlan_interface=$(get_state_value "macvlan_interface")
-    macvlan_interface=${macvlan_interface:-"mihomo_veth"}
     
     # 获取主接口的实际IP地址
     local host_ip=$(ip -o -4 addr show dev "$main_interface" | awk '{print $4}' | cut -d/ -f1 | head -n1)
@@ -387,48 +385,6 @@ create_docker_network() {
             echo -e "${GREEN}✓ Docker macvlan网络创建成功${PLAIN}"
         else
             echo -e "${YELLOW}⚠ Docker macvlan网络创建失败，将使用bridge网络${PLAIN}"
-            return 0
-        fi
-    fi
-    
-    # 简化主机macvlan接口配置
-    echo -e "${CYAN}正在配置主机网络接口...${PLAIN}"
-    
-    if ip link show "$macvlan_interface" &>/dev/null; then
-        echo -e "${YELLOW}主机macvlan接口 '$macvlan_interface' 已存在${PLAIN}"
-        # 接口已存在，检查是否需要更新状态文件
-        local existing_ip=$(ip -4 addr show "$macvlan_interface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
-        if [[ -n "$existing_ip" ]]; then
-            echo -e "${GREEN}现有接口IP: $existing_ip${PLAIN}"
-            # 更新状态文件中的interface_ip字段
-            update_state "interface_ip" "$existing_ip"
-        fi
-    else
-        echo -e "${CYAN}正在创建主机macvlan接口...${PLAIN}"
-        
-        # 创建macvlan接口
-        if ip link add "$macvlan_interface" link "$main_interface" type macvlan mode bridge; then
-            echo -e "${GREEN}✓ macvlan接口创建成功${PLAIN}"
-            
-            # 计算一个不冲突的IP地址给主机接口
-            local host_macvlan_ip=$(echo "$mihomo_ip" | cut -d. -f1-3).254
-            
-            # 配置接口IP并启用
-            if ip addr add "${host_macvlan_ip}/24" dev "$macvlan_interface" 2>/dev/null; then
-                ip link set "$macvlan_interface" up
-                echo -e "${GREEN}✓ macvlan接口配置完成 (IP: $host_macvlan_ip)${PLAIN}"
-                
-                # 更新状态文件中的interface_ip字段
-                update_state "interface_ip" "$host_macvlan_ip"
-                
-                # 添加到mihomo_ip的路由
-                ip route add "$mihomo_ip/32" dev "$macvlan_interface" 2>/dev/null
-            else
-                echo -e "${YELLOW}⚠ macvlan接口IP配置失败，但接口已创建${PLAIN}"
-                ip link set "$macvlan_interface" up
-            fi
-        else
-            echo -e "${YELLOW}⚠ 主机macvlan接口创建失败，将使用bridge网络${PLAIN}"
             return 0
         fi
     fi
@@ -639,8 +595,6 @@ start_mihomo_container() {
             --restart=unless-stopped \
             --network mnet \
             --ip "$mihomo_ip" \
-            --dns=8.8.8.8 \
-            --dns=1.1.1.1 \
             -v "$CONF_DIR:/root/.config/mihomo" \
             --cap-add=NET_ADMIN \
             --cap-add=NET_RAW \
@@ -678,8 +632,6 @@ start_mihomo_container() {
             --name=mihomo \
             --restart=unless-stopped \
             --network=bridge \
-            --dns=8.8.8.8 \
-            --dns=1.1.1.1 \
             -p 9090:9090 \
             -p 7890:7890 \
             -p 7891:7891 \

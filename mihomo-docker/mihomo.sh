@@ -490,7 +490,6 @@ init_state_file() {
 {
   "version": "$STATE_VERSION",
   "mihomo_ip": "$INTERFACE_IP",
-  "interface_ip": "$INTERFACE_IP",
   "main_interface": "$MAIN_INTERFACE",
   "gateway_ip": "",
   "macvlan_interface": "mihomo_veth",
@@ -973,7 +972,6 @@ init_setup() {
 {
   "version": "$STATE_VERSION",
   "mihomo_ip": "",
-  "interface_ip": "",
   "main_interface": "$MAIN_INTERFACE",
   "gateway_ip": "",
   "macvlan_interface": "mihomo_veth",
@@ -1422,16 +1420,16 @@ uninstall_mihomo() {
     
     echo -e "${CYAN}正在删除主机网络配置...${PLAIN}"
     
-    # 删除macvlan接口
+    # 删除macvlan接口（如果存在的话，可能是旧版本创建的）
     if ip link show "$macvlan_interface" &>/dev/null; then
         ip link delete "$macvlan_interface" 2>/dev/null
         if [[ $? -eq 0 ]]; then
-            echo -e "${GREEN}✓ 已删除macvlan接口: $macvlan_interface${PLAIN}"
+            echo -e "${GREEN}✓ 已删除旧版本的macvlan接口: $macvlan_interface${PLAIN}"
         else
             echo -e "${YELLOW}⚠ macvlan接口删除失败: $macvlan_interface${PLAIN}"
         fi
     else
-        echo -e "${YELLOW}⚠ macvlan接口不存在: $macvlan_interface${PLAIN}"
+        echo -e "${YELLOW}⚠ 无需删除macvlan接口（新版本不使用）${PLAIN}"
     fi
     
     # 删除混杂模式服务

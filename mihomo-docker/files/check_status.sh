@@ -38,7 +38,6 @@ get_state_value() {
 
 # Mihomo IP
 MIHOMO_IP=$(get_state_value "mihomo_ip")
-INTERFACE_IP=$(get_state_value "interface_ip")
 MAIN_INTERFACE=$(get_state_value "main_interface")
 MACVLAN_INTERFACE=$(get_state_value "macvlan_interface")
 INSTALL_STAGE=$(get_state_value "installation_stage")
@@ -58,7 +57,6 @@ echo
 # 显示基本配置信息
 echo -e "${CYAN}基本配置信息:${PLAIN}"
 echo -e "Mihomo IP: ${GREEN}$MIHOMO_IP${PLAIN}"
-echo -e "接口IP: ${GREEN}$INTERFACE_IP${PLAIN}"
 echo -e "主网络接口: ${GREEN}$MAIN_INTERFACE${PLAIN}"
 echo -e "MacVLAN接口: ${GREEN}$MACVLAN_INTERFACE${PLAIN}"
 echo -e "安装阶段: ${GREEN}$INSTALL_STAGE${PLAIN}"
@@ -126,38 +124,12 @@ else
 fi
 
 # 检查网络接口
-echo
-echo -e "${CYAN}检查网络接口 (mihomo访问宿主机时使用的IP):${PLAIN}"
+echo -e "${CYAN}检查网络接口状态:${PLAIN}"
 if ip link show | grep -q $MACVLAN_INTERFACE; then
-    echo -e "MacVLAN接口: ${GREEN}已创建${PLAIN}"
-    IP_ADDR=$(ip -4 addr show $MACVLAN_INTERFACE | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-    echo -e "接口IP地址: ${GREEN}$IP_ADDR${PLAIN}"
-    
-    if [[ "$IP_ADDR" != "$INTERFACE_IP" ]]; then
-        echo -e "${YELLOW}警告: 接口IP地址与配置不一致${PLAIN}"
-    fi
-    
-    # 检查接口是否启用
-    if ip link show $MACVLAN_INTERFACE | grep -q "state UP"; then
-        echo -e "接口状态: ${GREEN}已启用${PLAIN}"
-    else
-        echo -e "接口状态: ${RED}未启用${PLAIN}"
-        echo -e "${YELLOW}尝试启用接口...${PLAIN}"
-        ip link set $MACVLAN_INTERFACE up
-    fi
+    echo -e "MacVLAN接口: ${GREEN}已创建 (但已不再使用)${PLAIN}"
+    echo -e "${YELLOW}注意: 新版本已简化网络配置，不再需要宿主机macvlan接口${PLAIN}"
 else
-    echo -e "MacVLAN接口: ${RED}未创建${PLAIN}"
-    echo -e "${YELLOW}尝试创建接口...${PLAIN}"
-    ip link add $MACVLAN_INTERFACE link $MAIN_INTERFACE type macvlan mode bridge
-    ip addr add $INTERFACE_IP/24 dev $MACVLAN_INTERFACE
-    ip link set $MACVLAN_INTERFACE up
-    ip route add $MIHOMO_IP dev $MACVLAN_INTERFACE
-    
-    if ip link show | grep -q $MACVLAN_INTERFACE; then
-        echo -e "${GREEN}MacVLAN接口创建成功${PLAIN}"
-    else
-        echo -e "${RED}MacVLAN接口创建失败${PLAIN}"
-    fi
+    echo -e "MacVLAN接口: ${YELLOW}未创建 (正常，新版本不需要)${PLAIN}"
 fi
 
 # 检查主网卡是否处于混杂模式
@@ -192,29 +164,12 @@ else
 fi
 
 # 检查是否正确配置网络接口
-if ip link show | grep -q "$MACVLAN_INTERFACE"; then
-    echo -e "网络接口: ${GREEN}已配置${PLAIN}"
-    
-    # 检查网络接口是否启用
-    if ip link show "$MACVLAN_INTERFACE" | grep -q "state UP"; then
-        echo -e "网络接口状态: ${GREEN}已启用${PLAIN}"
-    else
-        echo -e "网络接口状态: ${RED}未启用${PLAIN}"
-        echo -e "${YELLOW}正在尝试启用接口...${PLAIN}"
-        ip link set "$MACVLAN_INTERFACE" up
-    fi
-
-    # 检查路由是否存在
-    if ip route | grep -q "$MIHOMO_IP.*$MACVLAN_INTERFACE"; then
-        echo -e "路由配置: ${GREEN}已配置${PLAIN}"
-    else
-        echo -e "路由配置: ${RED}未配置${PLAIN}"
-        echo -e "${YELLOW}正在添加路由...${PLAIN}"
-        ip route add $MIHOMO_IP dev $MACVLAN_INTERFACE
-    fi
+echo -e "${CYAN}检查Docker网络配置:${PLAIN}"
+if docker network ls | grep -q mnet; then
+    echo -e "Docker macvlan网络: ${GREEN}已配置${PLAIN}"
 else
-    echo -e "网络接口: ${RED}未配置${PLAIN}"
-    echo -e "${YELLOW}网络接口可能需要重新配置${PLAIN}"
+    echo -e "Docker macvlan网络: ${RED}未配置${PLAIN}"
+    echo -e "${YELLOW}网络可能需要重新配置${PLAIN}"
 fi
 
 # 检查连接性
