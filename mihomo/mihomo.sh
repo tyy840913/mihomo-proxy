@@ -37,7 +37,8 @@ fi
 # 全局环境变量
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="/etc/mihomo"
-BINARY_DIR="/opt/mihomo"
+BINARY_DIR="/opt"
+BINARY_FILE="/opt/mihomo"
 SERVICE_FILE="/etc/systemd/system/mihomo.service"
 LOG_FILE="/var/log/mihomo.log"
 
@@ -165,12 +166,9 @@ download_mihomo() {
     # 构建下载URL
     local download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-${arch}-${latest_version}.gz"
     
-    # 创建目录
-    mkdir -p "$BINARY_DIR"
-    
     # 下载文件
     echo -e "${CYAN}正在下载: $download_url${PLAIN}"
-    if wget -O "$BINARY_DIR/mihomo.gz" "$download_url"; then
+    if wget -O "$BINARY_FILE.gz" "$download_url"; then
         echo -e "${GREEN}✓ 下载成功${PLAIN}"
     else
         handle_error "下载失败，请检查网络连接"
@@ -178,12 +176,11 @@ download_mihomo() {
     
     # 解压文件
     echo -e "${CYAN}正在解压文件...${PLAIN}"
-    cd "$BINARY_DIR"
-    gunzip mihomo.gz
-    chmod 755 mihomo
+    gunzip "$BINARY_FILE.gz"
+    chmod 755 "$BINARY_FILE"
     
     echo -e "${GREEN}✓ Mihomo二进制文件安装完成${PLAIN}"
-    echo -e "${YELLOW}安装位置: $BINARY_DIR/mihomo${PLAIN}"
+    echo -e "${YELLOW}安装位置: $BINARY_FILE${PLAIN}"
 }
 
 # 下载UI界面
@@ -295,7 +292,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=$BINARY_DIR/mihomo -d $CONFIG_DIR
+ExecStart=$BINARY_FILE -d $CONFIG_DIR
 Restart=always
 RestartSec=5
 
@@ -402,9 +399,9 @@ check_status() {
     fi
     
     # 检查二进制文件
-    if [[ -f "$BINARY_DIR/mihomo" ]]; then
+    if [[ -f "$BINARY_FILE" ]]; then
         echo -e "${GREEN}✓ 二进制文件: 存在${PLAIN}"
-        local version=$($BINARY_DIR/mihomo -v 2>/dev/null | head -n1)
+        local version=$($BINARY_FILE -v 2>/dev/null | head -n1)
         echo -e "${YELLOW}• 版本: $version${PLAIN}"
     else
         echo -e "${RED}✗ 二进制文件: 不存在${PLAIN}"
@@ -506,8 +503,8 @@ uninstall_mihomo() {
     fi
     
     # 删除二进制文件
-    if [[ -d "$BINARY_DIR" ]]; then
-        rm -rf "$BINARY_DIR"
+    if [[ -f "$BINARY_FILE" ]]; then
+        rm -f "$BINARY_FILE"
         echo -e "${GREEN}✓ 已删除二进制文件${PLAIN}"
     fi
     

@@ -50,7 +50,7 @@ wget https://raw.githubusercontent.com/wallentv/mihomo-proxy/refs/heads/master/m
 ### ✅ Mihomo 安装
 - 自动获取最新版本
 - 根据架构下载对应二进制文件
-- 安装到 `/opt/mihomo/mihomo`
+- 安装到 `/opt/mihomo`
 - 设置正确的文件权限
 
 ### ✅ UI 界面安装
@@ -100,7 +100,7 @@ mihomo/
 
 ## 安装位置
 
-- **二进制文件**: `/opt/mihomo/mihomo`
+- **二进制文件**: `/opt/mihomo`
 - **配置目录**: `/etc/mihomo/`
 - **配置文件**: `/etc/mihomo/config.yaml`
 - **UI界面**: `/etc/mihomo/ui/`

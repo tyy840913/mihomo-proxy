@@ -102,7 +102,7 @@ sudo ./mihomo.sh
 
 ## 安装位置
 
-- **二进制文件**: `/opt/mihomo/mihomo`
+- **二进制文件**: `/opt/mihomo`
 - **配置目录**: `/etc/mihomo/`
 - **配置文件**: `/etc/mihomo/config.yaml`
 - **UI界面**: `/etc/mihomo/ui/`
@@ -165,7 +165,7 @@ netstat -tlnp | grep mihomo
 journalctl -u mihomo -n 50
 
 # 检查配置文件语法
-/opt/mihomo/mihomo -t -d /etc/mihomo
+/opt/mihomo -t -d /etc/mihomo
 ```
 
 ### 2. 网络连接问题
@@ -183,11 +183,11 @@ iptables -L
 
 ```bash
 # 检查文件权限
-ls -la /opt/mihomo/
+ls -la /opt/mihomo
 ls -la /etc/mihomo/
 
 # 修复权限
-chmod +x /opt/mihomo/mihomo
+chmod +x /opt/mihomo
 chmod 644 /etc/mihomo/config.yaml
 ```
 
