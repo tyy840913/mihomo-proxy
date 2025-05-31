@@ -82,7 +82,8 @@ sudo ./mihomo.sh
  [4] 重启服务
  [5] 查看状态
  [6] 使用指南
- [7] 卸载 Mihomo
+ [7] 系统修复
+ [8] 卸载 Mihomo
  [0] 退出脚本
 ======================================================
 ```
@@ -168,7 +169,23 @@ journalctl -u mihomo -n 50
 /opt/mihomo -t -d /etc/mihomo
 ```
 
-### 2. 网络连接问题
+### 2. 系统包管理器问题
+
+如果遇到 dpkg 错误或包管理器问题：
+
+```bash
+# 使用脚本内置的系统修复功能
+sudo ./mihomo.sh
+# 然后选择菜单中的 "7. 系统修复"
+
+# 或手动修复
+sudo dpkg --configure -a
+sudo apt-get -f install -y
+sudo apt-get clean
+sudo apt-get update --fix-missing
+```
+
+### 3. 网络连接问题
 
 ```bash
 # 检查IP转发是否开启
@@ -179,7 +196,7 @@ ufw status
 iptables -L
 ```
 
-### 3. 权限问题
+### 4. 权限问题
 
 ```bash
 # 检查文件权限

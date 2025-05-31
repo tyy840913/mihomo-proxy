@@ -120,6 +120,30 @@ detect_architecture() {
     esac
 }
 
+# 系统修复函数
+fix_system() {
+    echo -e "${CYAN}正在修复系统包管理器问题...${PLAIN}"
+    
+    # 修复 dpkg 中断的安装
+    echo -e "${CYAN}修复中断的包安装...${PLAIN}"
+    dpkg --configure -a
+    
+    # 修复损坏的依赖关系
+    echo -e "${CYAN}修复损坏的依赖关系...${PLAIN}"
+    apt-get -f install -y
+    
+    # 清理包缓存
+    echo -e "${CYAN}清理包缓存...${PLAIN}"
+    apt-get clean
+    apt-get autoclean
+    
+    # 更新包列表
+    echo -e "${CYAN}更新包列表...${PLAIN}"
+    apt-get update --fix-missing
+    
+    echo -e "${GREEN}✓ 系统修复完成${PLAIN}"
+}
+
 # 获取主网卡IP地址
 get_main_ip() {
     local main_interface=$(ip route | grep default | awk '{print $5}' | head -n1)
@@ -131,19 +155,39 @@ get_main_ip() {
 setup_environment() {
     echo -e "${CYAN}正在配置系统环境...${PLAIN}"
     
+    # 修复可能的 dpkg 问题
+    echo -e "${CYAN}检查并修复包管理器状态...${PLAIN}"
+    dpkg --configure -a >/dev/null 2>&1
+    apt-get -f install -y >/dev/null 2>&1
+    
     # 更新系统
     echo -e "${CYAN}更新系统软件包...${PLAIN}"
-    apt update && apt upgrade -y
+    if ! apt update; then
+        echo -e "${YELLOW}⚠ 系统更新失败，尝试修复...${PLAIN}"
+        apt-get clean
+        apt-get update --fix-missing
+    fi
     
-    # 安装必要工具
+    # 安装必要工具（不进行系统升级，避免 dpkg 问题）
     echo -e "${CYAN}安装必要工具...${PLAIN}"
-    apt install -y wget curl tar systemctl
+    apt install -y wget curl tar net-tools
+    
+    # 检查 systemctl 是否可用
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ systemctl 不可用，尝试安装 systemd${PLAIN}"
+        apt install -y systemd
+    fi
     
     # 开启IP转发
     echo -e "${CYAN}开启IP转发...${PLAIN}"
-    echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
-    echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf
-    sysctl -p
+    # 检查是否已经设置过，避免重复添加
+    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+        echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+    fi
+    if ! grep -q "net.ipv6.conf.all.forwarding=1" /etc/sysctl.conf; then
+        echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf
+    fi
+    sysctl -p >/dev/null 2>&1
     
     echo -e "${GREEN}✓ 系统环境配置完成${PLAIN}"
 }
@@ -377,9 +421,17 @@ check_status() {
         
         # 检查端口监听
         echo -e "\n${CYAN}端口监听状态:${PLAIN}"
-        netstat -tlnp | grep mihomo | while read line; do
-            echo -e "${GREEN}✓ $line${PLAIN}"
-        done
+        if command -v netstat >/dev/null 2>&1; then
+            netstat -tlnp | grep mihomo | while read line; do
+                echo -e "${GREEN}✓ $line${PLAIN}"
+            done
+        elif command -v ss >/dev/null 2>&1; then
+            ss -tlnp | grep mihomo | while read line; do
+                echo -e "${GREEN}✓ $line${PLAIN}"
+            done
+        else
+            echo -e "${YELLOW}⚠ 无法检查端口状态（缺少 netstat 或 ss 命令）${PLAIN}"
+        fi
         
     else
         echo -e "${RED}✗ Mihomo服务: 未运行${PLAIN}"
@@ -558,7 +610,11 @@ one_key_install() {
     check_os
     
     echo -e "${CYAN}[2/7] 配置系统环境...${PLAIN}"
-    setup_environment
+    if ! setup_environment; then
+        echo -e "${YELLOW}⚠ 环境配置失败，尝试系统修复...${PLAIN}"
+        fix_system
+        setup_environment
+    fi
     
     echo -e "${CYAN}[3/7] 下载Mihomo二进制文件...${PLAIN}"
     download_mihomo
@@ -610,7 +666,8 @@ show_menu() {
         echo -e "${GREEN} [4] 重启服务${PLAIN}"
         echo -e "${GREEN} [5] 查看状态${PLAIN}"
         echo -e "${GREEN} [6] 使用指南${PLAIN}"
-        echo -e "${GREEN} [7] 卸载 Mihomo${PLAIN}"
+        echo -e "${GREEN} [7] 系统修复${PLAIN}"
+        echo -e "${GREEN} [8] 卸载 Mihomo${PLAIN}"
         echo -e "${GREEN} [0] 退出脚本${PLAIN}"
         echo -e "${CYAN}======================================================${PLAIN}"
         
@@ -624,7 +681,7 @@ show_menu() {
         fi
         echo
         
-        read -p "请输入选择 [0-7]: " choice
+        read -p "请输入选择 [0-8]: " choice
         
         case $choice in
             1)
@@ -649,6 +706,9 @@ show_menu() {
                 show_usage_guide
                 ;;
             7)
+                fix_system
+                ;;
+            8)
                 uninstall_mihomo
                 ;;
             0)
