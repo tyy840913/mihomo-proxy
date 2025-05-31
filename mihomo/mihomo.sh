@@ -105,7 +105,12 @@ detect_architecture() {
     local arch=$(uname -m)
     case $arch in
         x86_64)
-            echo "amd64"
+            # 检查是否支持 AMD64 v3 微架构
+            if grep -q "avx2" /proc/cpuinfo && grep -q "bmi2" /proc/cpuinfo; then
+                echo "amd64"
+            else
+                echo "amd64-compatible"
+            fi
             ;;
         aarch64|arm64)
             echo "arm64"
@@ -114,8 +119,43 @@ detect_architecture() {
             echo "armv7"
             ;;
         *)
-            echo -e "${YELLOW}⚠ 未知架构: $arch，默认使用 amd64${PLAIN}"
+            echo -e "${YELLOW}⚠ 未知架构: $arch，默认使用兼容版本${PLAIN}"
+            echo "amd64-compatible"
+            ;;
+    esac
+}
+
+# 手动选择架构
+manual_architecture_selection() {
+    echo -e "${CYAN}======================================================${PLAIN}"
+    echo -e "${CYAN}              手动选择架构版本${PLAIN}"
+    echo -e "${CYAN}======================================================${PLAIN}"
+    echo -e "${YELLOW}如果自动检测的架构不正确，请手动选择:${PLAIN}"
+    echo
+    echo -e "${GREEN} [1] amd64 (现代 AMD64 处理器，支持 v3 微架构)${PLAIN}"
+    echo -e "${GREEN} [2] amd64-compatible (旧版 AMD64 处理器兼容版本)${PLAIN}"
+    echo -e "${GREEN} [3] arm64 (ARM 64位处理器)${PLAIN}"
+    echo -e "${GREEN} [4] armv7 (ARM 32位处理器)${PLAIN}"
+    echo -e "${GREEN} [0] 使用自动检测${PLAIN}"
+    echo
+    
+    read -p "请选择架构 [0-4]: " arch_choice
+    
+    case $arch_choice in
+        1)
             echo "amd64"
+            ;;
+        2)
+            echo "amd64-compatible"
+            ;;
+        3)
+            echo "arm64"
+            ;;
+        4)
+            echo "armv7"
+            ;;
+        0|*)
+            detect_architecture
             ;;
     esac
 }
@@ -207,15 +247,34 @@ download_mihomo() {
     
     echo -e "${GREEN}最新版本: $latest_version${PLAIN}"
     
-    # 构建下载URL
-    local download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-${arch}-${latest_version}.gz"
+    # 根据架构构建下载URL
+    local download_url
+    if [[ "$arch" == "amd64-compatible" ]]; then
+        # 对于不支持 v3 微架构的处理器，使用兼容版本
+        echo -e "${YELLOW}检测到旧版 AMD64 处理器，下载兼容版本...${PLAIN}"
+        download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-amd64-compatible-${latest_version}.gz"
+    else
+        download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-${arch}-${latest_version}.gz"
+    fi
     
     # 下载文件
     echo -e "${CYAN}正在下载: $download_url${PLAIN}"
     if wget -O "$BINARY_FILE.gz" "$download_url"; then
         echo -e "${GREEN}✓ 下载成功${PLAIN}"
     else
-        handle_error "下载失败，请检查网络连接"
+        # 如果兼容版本下载失败，尝试下载标准版本
+        if [[ "$arch" == "amd64-compatible" ]]; then
+            echo -e "${YELLOW}⚠ 兼容版本下载失败，尝试标准版本...${PLAIN}"
+            download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-amd64-${latest_version}.gz"
+            if wget -O "$BINARY_FILE.gz" "$download_url"; then
+                echo -e "${GREEN}✓ 标准版本下载成功${PLAIN}"
+                echo -e "${YELLOW}⚠ 注意: 如果启动失败，可能是处理器不支持，请联系开发者${PLAIN}"
+            else
+                handle_error "下载失败，请检查网络连接"
+            fi
+        else
+            handle_error "下载失败，请检查网络连接"
+        fi
     fi
     
     # 解压文件
@@ -667,7 +726,8 @@ show_menu() {
         echo -e "${GREEN} [5] 查看状态${PLAIN}"
         echo -e "${GREEN} [6] 使用指南${PLAIN}"
         echo -e "${GREEN} [7] 系统修复${PLAIN}"
-        echo -e "${GREEN} [8] 卸载 Mihomo${PLAIN}"
+        echo -e "${GREEN} [8] 手动选择架构重装${PLAIN}"
+        echo -e "${GREEN} [9] 卸载 Mihomo${PLAIN}"
         echo -e "${GREEN} [0] 退出脚本${PLAIN}"
         echo -e "${CYAN}======================================================${PLAIN}"
         
@@ -681,7 +741,7 @@ show_menu() {
         fi
         echo
         
-        read -p "请输入选择 [0-8]: " choice
+        read -p "请输入选择 [0-9]: " choice
         
         case $choice in
             1)
@@ -709,6 +769,41 @@ show_menu() {
                 fix_system
                 ;;
             8)
+                # 手动选择架构重装
+                clear
+                echo -e "${CYAN}======================================================${PLAIN}"
+                echo -e "${CYAN}              手动选择架构重装${PLAIN}"
+                echo -e "${CYAN}======================================================${PLAIN}"
+                
+                # 停止现有服务
+                if systemctl is-active --quiet mihomo; then
+                    stop_service
+                fi
+                
+                # 删除现有二进制文件
+                if [[ -f "$BINARY_FILE" ]]; then
+                    rm -f "$BINARY_FILE"
+                    echo -e "${GREEN}✓ 已删除现有二进制文件${PLAIN}"
+                fi
+                
+                # 手动选择架构
+                local selected_arch=$(manual_architecture_selection)
+                echo -e "${GREEN}选择的架构: $selected_arch${PLAIN}"
+                
+                # 重新下载
+                echo -e "${CYAN}正在重新下载 Mihomo...${PLAIN}"
+                
+                # 临时覆盖架构检测函数
+                detect_architecture() {
+                    echo "$selected_arch"
+                }
+                
+                download_mihomo
+                start_service
+                
+                read -p "按任意键继续..." key
+                ;;
+            9)
                 uninstall_mihomo
                 ;;
             0)

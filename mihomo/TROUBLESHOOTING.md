@@ -38,7 +38,26 @@ sudo apt-get update --fix-missing
 sudo ./mihomo.sh --auto-install
 ```
 
-### 2. 网络下载失败
+### 2. 架构兼容性问题 (AMD64 v3 微架构支持)
+
+**错误信息**: `This program can only be run on AMD64 processors with v3 microarchitecture support.`
+
+这个问题出现在旧版 AMD64 处理器上，不支持 v3 微架构。
+
+#### 解决方法：
+
+```bash
+# 方法一：使用脚本的手动架构选择功能
+sudo ./mihomo.sh
+# 选择菜单中的 "8. 手动选择架构重装"
+# 然后选择 "2. amd64-compatible (旧版 AMD64 处理器兼容版本)"
+
+# 方法二：检查处理器支持的指令集
+grep -E "(avx2|bmi2)" /proc/cpuinfo
+# 如果没有输出，说明不支持 v3 微架构，需要使用兼容版本
+```
+
+### 3. 网络下载失败
 
 ```bash
 # 检查网络连接
@@ -48,7 +67,7 @@ ping -c 3 github.com
 echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
 ```
 
-### 3. 权限问题
+### 4. 权限问题
 
 ```bash
 # 确保以 root 权限运行
@@ -58,7 +77,7 @@ sudo ./mihomo.sh
 chmod +x mihomo.sh
 ```
 
-### 4. 服务启动失败
+### 5. 服务启动失败
 
 ```bash
 # 查看详细错误日志
@@ -71,7 +90,7 @@ sudo /opt/mihomo -t -d /etc/mihomo
 sudo netstat -tlnp | grep -E "(7890|7891|7892|9090|53)"
 ```
 
-### 5. 完全重新安装
+### 6. 完全重新安装
 
 如果以上方法都无效，可以完全重新安装：
 
