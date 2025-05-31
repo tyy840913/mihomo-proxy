@@ -2,7 +2,7 @@
 
 ## 概述
 
-`mihomo-setup.sh` 是一个专为 Debian/Ubuntu 系统设计的 Mihomo 一键安装和管理脚本。该脚本提供了完整的 Mihomo 生命周期管理功能，包括安装、配置、启停、更新和卸载。
+`mihomo-docker.sh` 是一个专为 Debian/Ubuntu 系统设计的 Mihomo 一键安装和管理脚本。该脚本提供了完整的 Mihomo 生命周期管理功能，包括安装、配置、启停、更新和卸载。
 
 ## 特性
 
@@ -28,7 +28,7 @@
 
 ```bash
 # 方法一：直接下载
-wget https://raw.githubusercontent.com/your-repo/mihomo-proxy/main/mihomo-setup.sh
+wget https://raw.githubusercontent.com/your-repo/mihomo-proxy/main/mihomo-docker/mihomo-docker.sh
 
 # 方法二：克隆仓库
 git clone https://github.com/your-repo/mihomo-proxy.git
@@ -39,10 +39,10 @@ cd mihomo-proxy
 
 ```bash
 # 给脚本执行权限
-chmod +x mihomo-setup.sh
+chmod +x mihomo-docker.sh
 
 # 运行脚本（需要root权限）
-sudo ./mihomo-setup.sh
+sudo ./mihomo-docker.sh
 ```
 
 ### 3. 选择安装

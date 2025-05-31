@@ -2,7 +2,7 @@
 
 ## 简介
 
-Mihomo 一键安装脚本（mihomo.sh）是一个方便用户快速部署 Mihomo 代理服务的工具。通过简单的命令，即可自动完成 Docker 环境搭建、网络配置以及 Mihomo 容器的部署与启动。
+Mihomo 一键安装脚本（mihomo-docker.sh）是一个方便用户快速部署 Mihomo 代理服务的工具。通过简单的命令，即可自动完成 Docker 环境搭建、网络配置以及 Mihomo 容器的部署与启动。
 
 ## 目录结构
 
@@ -10,7 +10,7 @@ Mihomo 一键安装脚本（mihomo.sh）是一个方便用户快速部署 Mihomo
 
 ```
 mihomo-docker/
-├── mihomo.sh          # 主安装脚本
+├── mihomo-docker.sh          # 主安装脚本
 ├── README.md          # 本使用说明
 └── files/             # 必要的配置文件和辅助脚本
     ├── config.yaml       # Mihomo配置模板
@@ -24,30 +24,30 @@ mihomo-docker/
 
 ### 1. 获取脚本
 
-直接使用脚本所在目录的mihomo.sh：
+直接使用脚本所在目录的mihomo-docker.sh：
 
 ```bash
 cd mihomo-docker
-bash mihomo.sh
+bash mihomo-docker.sh
 ```
 
 如需下载到其他位置，可使用以下命令：
 
 ```bash
 # 使用curl下载
-curl -fsSL https://raw.githubusercontent.com/wallentv/mihomo-proxy/refs/heads/master/mihomo-docker/mihomo.sh -o mihomo.sh
+curl -fsSL https://raw.githubusercontent.com/wallentv/mihomo-proxy/refs/heads/master/mihomo-docker/mihomo-docker.sh -o mihomo-docker.sh
 ```
 
 ```bash
 # 或使用wget下载
-wget -O mihomo.sh https://raw.githubusercontent.com/wallentv/mihomo-proxy/refs/heads/master/mihomo-docker/mihomo.sh
+wget -O mihomo-docker.sh https://raw.githubusercontent.com/wallentv/mihomo-proxy/refs/heads/master/mihomo-docker/mihomo-docker.sh
 ```
 
 ### 2. 运行脚本
 
 ```bash
-chmod +x mihomo.sh  # 赋予执行权限
-bash mihomo.sh      # 执行脚本
+chmod +x mihomo-docker.sh  # 赋予执行权限
+bash mihomo-docker.sh      # 执行脚本
 ```
 
 ## 菜单选项说明
