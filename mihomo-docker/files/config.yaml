@@ -1,5 +1,5 @@
 #---------------------------------------------------#
-## 这个是配置文件模版，可根据自己情况重新定义。正式配置文件要放到 “/etc/mihomo” 文件夹下。
+## 这个是配置文件模版，可根据自己情况重新定义。正式配置文件要放到 "/etc/mihomo" 文件夹下。
 ## 
 ## 当前配置:
 ## - Hysteria2 代理（高性能抗干扰协议）
@@ -210,8 +210,6 @@ dns:
 tun:
   enable: true # 开启后所有流量都会通过Clash，无需在软件里单独设置代理
   stack: system # 使用系统网络栈
-  macOS-auto-route: true # 自动设置路由表
-  macOS-auto-detect-interface: true # 自动检测网络接口
   dns-hijack:
     - tcp://any:53  # 接管所有DNS请求，防止DNS泄露
     - udp://any:53  # 接管所有DNS请求，防止DNS泄露
