@@ -485,13 +485,74 @@ init_state_file() {
         MAIN_INTERFACE=${MAIN_INTERFACE:-$(ip route | grep default | awk '{print $5}' | head -n 1)}
         INTERFACE_IP=$(ip -o -4 addr show dev "$MAIN_INTERFACE" | awk '{print $4}' | cut -d/ -f1 | head -n1)
         
+        # 为Mihomo分配一个独立的IP地址（不能和宿主机IP相同）
+        local mihomo_ip=""
+        local ip_parts=(${INTERFACE_IP//./ })
+        local subnet_prefix="${ip_parts[0]}.${ip_parts[1]}.${ip_parts[2]}"
+        
+        # 获取网关IP
+        local gateway_ip=$(ip route | grep default | awk '{print $3}' | head -n1)
+        echo -e "${CYAN}检测到网关IP: $gateway_ip${PLAIN}"
+        
+        # 查找可用的IP地址（避免和宿主机IP、网关IP冲突）
+        echo -e "${CYAN}正在为Mihomo分配独立IP地址...${PLAIN}"
+        echo -e "${YELLOW}宿主机IP: $INTERFACE_IP${PLAIN}"
+        echo -e "${YELLOW}网关IP: $gateway_ip${PLAIN}"
+        
+        # 优先在100-200范围内查找
+        for i in {100..200}; do
+            local test_ip="${subnet_prefix}.${i}"
+            # 跳过宿主机IP和网关IP
+            if [[ "$test_ip" == "$INTERFACE_IP" || "$test_ip" == "$gateway_ip" ]]; then
+                continue
+            fi
+            # 检查IP是否已被使用（快速检测，超时1秒）
+            if ! ping -c 1 -W 1 "$test_ip" &> /dev/null; then
+                mihomo_ip="$test_ip"
+                echo -e "${GREEN}为Mihomo分配IP: $mihomo_ip${PLAIN}"
+                break
+            fi
+        done
+        
+        # 如果100-200范围没有可用IP，尝试50-99范围
+        if [[ -z "$mihomo_ip" ]]; then
+            echo -e "${YELLOW}100-200范围无可用IP，尝试50-99范围...${PLAIN}"
+            for i in {50..99}; do
+                local test_ip="${subnet_prefix}.${i}"
+                if [[ "$test_ip" == "$INTERFACE_IP" || "$test_ip" == "$gateway_ip" ]]; then
+                    continue
+                fi
+                if ! ping -c 1 -W 1 "$test_ip" &> /dev/null; then
+                    mihomo_ip="$test_ip"
+                    echo -e "${GREEN}为Mihomo分配IP: $mihomo_ip${PLAIN}"
+                    break
+                fi
+            done
+        fi
+        
+        # 如果还是没有找到可用IP，使用默认策略
+        if [[ -z "$mihomo_ip" ]]; then
+            # 使用宿主机IP的最后一位+100作为默认值
+            local last_octet="${ip_parts[3]}"
+            local new_octet=$((last_octet + 100))
+            if [[ $new_octet -gt 254 ]]; then
+                new_octet=$((last_octet - 50))
+            fi
+            if [[ $new_octet -lt 2 ]]; then
+                new_octet=100
+            fi
+            mihomo_ip="${subnet_prefix}.${new_octet}"
+            echo -e "${YELLOW}使用默认IP分配策略: $mihomo_ip${PLAIN}"
+            echo -e "${YELLOW}注意: 请确保此IP地址未被其他设备使用${PLAIN}"
+        fi
+        
         # 创建新的状态文件
         cat > "$STATE_FILE" << EOF
 {
   "version": "$STATE_VERSION",
-  "mihomo_ip": "$INTERFACE_IP",
+  "mihomo_ip": "$mihomo_ip",
   "main_interface": "$MAIN_INTERFACE",
-  "gateway_ip": "",
+  "gateway_ip": "$gateway_ip",
   "macvlan_interface": "mihomo_veth",
   "installation_stage": "初始化",
   "config_type": "preset",
@@ -500,7 +561,10 @@ init_state_file() {
 }
 EOF
         log_message "创建本地状态文件: $STATE_FILE"
-        echo -e "${GREEN}已创建状态文件，默认Mihomo IP: $INTERFACE_IP${PLAIN}"
+        echo -e "${GREEN}已创建状态文件，Mihomo IP: $mihomo_ip${PLAIN}"
+        echo -e "${YELLOW}宿主机IP: $INTERFACE_IP${PLAIN}"
+        echo -e "${YELLOW}Mihomo IP: $mihomo_ip${PLAIN}"
+        echo -e "${YELLOW}网关IP: $gateway_ip${PLAIN}"
     else
         log_message "使用现有状态文件"
         echo -e "${GREEN}使用现有状态文件${PLAIN}"
