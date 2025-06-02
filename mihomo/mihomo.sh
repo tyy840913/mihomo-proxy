@@ -41,6 +41,8 @@ BINARY_DIR="/opt"
 BINARY_FILE="/opt/mihomo"
 SERVICE_FILE="/etc/systemd/system/mihomo.service"
 LOG_FILE="/var/log/mihomo.log"
+NFTABLES_CONF="/etc/nftables.conf"
+IPTABLES_RULES_FILE="/etc/mihomo-iptables.rules"
 
 # 颜色代码
 RED="\033[31m"
@@ -123,65 +125,6 @@ detect_architecture() {
             echo "amd64-compatible"
             ;;
     esac
-}
-
-# 手动选择架构
-manual_architecture_selection() {
-    echo -e "${CYAN}======================================================${PLAIN}"
-    echo -e "${CYAN}              手动选择架构版本${PLAIN}"
-    echo -e "${CYAN}======================================================${PLAIN}"
-    echo -e "${YELLOW}如果自动检测的架构不正确，请手动选择:${PLAIN}"
-    echo
-    echo -e "${GREEN} [1] amd64 (现代 AMD64 处理器，支持 v3 微架构)${PLAIN}"
-    echo -e "${GREEN} [2] amd64-compatible (旧版 AMD64 处理器兼容版本)${PLAIN}"
-    echo -e "${GREEN} [3] arm64 (ARM 64位处理器)${PLAIN}"
-    echo -e "${GREEN} [4] armv7 (ARM 32位处理器)${PLAIN}"
-    echo -e "${GREEN} [0] 使用自动检测${PLAIN}"
-    echo
-    
-    read -p "请选择架构 [0-4]: " arch_choice
-    
-    case $arch_choice in
-        1)
-            echo "amd64"
-            ;;
-        2)
-            echo "amd64-compatible"
-            ;;
-        3)
-            echo "arm64"
-            ;;
-        4)
-            echo "armv7"
-            ;;
-        0|*)
-            detect_architecture
-            ;;
-    esac
-}
-
-# 系统修复函数
-fix_system() {
-    echo -e "${CYAN}正在修复系统包管理器问题...${PLAIN}"
-    
-    # 修复 dpkg 中断的安装
-    echo -e "${CYAN}修复中断的包安装...${PLAIN}"
-    dpkg --configure -a
-    
-    # 修复损坏的依赖关系
-    echo -e "${CYAN}修复损坏的依赖关系...${PLAIN}"
-    apt-get -f install -y
-    
-    # 清理包缓存
-    echo -e "${CYAN}清理包缓存...${PLAIN}"
-    apt-get clean
-    apt-get autoclean
-    
-    # 更新包列表
-    echo -e "${CYAN}更新包列表...${PLAIN}"
-    apt-get update --fix-missing
-    
-    echo -e "${GREEN}✓ 系统修复完成${PLAIN}"
 }
 
 # 获取主网卡IP地址
@@ -458,6 +401,275 @@ restart_service() {
     fi
 }
 
+# 检测防火墙类型
+detect_firewall_type() {
+    if command -v nft >/dev/null 2>&1 && systemctl is-active --quiet nftables 2>/dev/null; then
+        echo "nftables"
+    elif command -v iptables >/dev/null 2>&1; then
+        echo "iptables"
+    else
+        echo "none"
+    fi
+}
+
+# 检查防火墙规则是否存在
+check_firewall_rules() {
+    local firewall_type=$(detect_firewall_type)
+    
+    case $firewall_type in
+        "nftables")
+            # 检查是否存在mihomo表
+            if nft list tables 2>/dev/null | grep -q "table inet mihomo"; then
+                return 0
+            else
+                return 1
+            fi
+            ;;
+        "iptables")
+            # 检查是否存在mihomo相关规则
+            if iptables -t nat -L PREROUTING 2>/dev/null | grep -q "mihomo"; then
+                return 0
+            else
+                return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 配置nftables规则
+setup_nftables_rules() {
+    local main_ip=$(get_main_ip)
+    local ssh_port=$(ss -tlnp | grep sshd | grep -oP ':\K\d+' | head -n1)
+    [[ -z "$ssh_port" ]] && ssh_port="22"
+    
+    echo -e "${CYAN}正在配置nftables透明代理规则...${PLAIN}"
+    
+    # 创建mihomo专用的nftables配置
+    cat > /etc/nftables-mihomo.conf << EOF
+#!/usr/sbin/nft -f
+
+# Mihomo透明代理规则
+table inet mihomo {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        
+        # 排除本机流量
+        ip saddr $main_ip return
+        
+        # 排除SSH端口，防止连接中断
+        tcp dport $ssh_port return
+        
+        # 排除局域网流量
+        ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return
+        
+        # 重定向TCP流量到Mihomo透明代理端口
+        ip protocol tcp redirect to :7892
+        
+        # 重定向DNS流量到Mihomo DNS端口
+        udp dport 53 redirect to :53
+        tcp dport 53 redirect to :53
+    }
+    
+    chain output {
+        type nat hook output priority -100; policy accept;
+        
+        # 排除本机流量
+        ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return
+        
+        # 重定向本机TCP流量（可选）
+        # ip protocol tcp redirect to :7892
+    }
+}
+EOF
+    
+    # 应用规则
+    if nft -f /etc/nftables-mihomo.conf; then
+        echo -e "${GREEN}✓ nftables规则配置成功${PLAIN}"
+        
+        # 将规则添加到主配置文件（如果存在）
+        if [[ -f "$NFTABLES_CONF" ]]; then
+            if ! grep -q "include \"/etc/nftables-mihomo.conf\"" "$NFTABLES_CONF"; then
+                echo 'include "/etc/nftables-mihomo.conf"' >> "$NFTABLES_CONF"
+                echo -e "${GREEN}✓ 已将规则添加到主配置文件${PLAIN}"
+            fi
+        fi
+        
+        return 0
+    else
+        echo -e "${RED}✗ nftables规则配置失败${PLAIN}"
+        return 1
+    fi
+}
+
+# 配置iptables规则
+setup_iptables_rules() {
+    local main_ip=$(get_main_ip)
+    local ssh_port=$(ss -tlnp | grep sshd | grep -oP ':\K\d+' | head -n1)
+    [[ -z "$ssh_port" ]] && ssh_port="22"
+    
+    echo -e "${CYAN}正在配置iptables透明代理规则...${PLAIN}"
+    
+    # 创建自定义链
+    iptables -t nat -N MIHOMO_PREROUTING 2>/dev/null || true
+    iptables -t nat -F MIHOMO_PREROUTING
+    
+    # 排除本机流量
+    iptables -t nat -A MIHOMO_PREROUTING -s $main_ip -j RETURN
+    
+    # 排除SSH端口
+    iptables -t nat -A MIHOMO_PREROUTING -p tcp --dport $ssh_port -j RETURN
+    
+    # 排除局域网流量
+    iptables -t nat -A MIHOMO_PREROUTING -d 127.0.0.0/8 -j RETURN
+    iptables -t nat -A MIHOMO_PREROUTING -d 10.0.0.0/8 -j RETURN
+    iptables -t nat -A MIHOMO_PREROUTING -d 172.16.0.0/12 -j RETURN
+    iptables -t nat -A MIHOMO_PREROUTING -d 192.168.0.0/16 -j RETURN
+    iptables -t nat -A MIHOMO_PREROUTING -d 169.254.0.0/16 -j RETURN
+    iptables -t nat -A MIHOMO_PREROUTING -d 224.0.0.0/4 -j RETURN
+    iptables -t nat -A MIHOMO_PREROUTING -d 240.0.0.0/4 -j RETURN
+    
+    # 重定向TCP流量到Mihomo透明代理端口
+    iptables -t nat -A MIHOMO_PREROUTING -p tcp -j REDIRECT --to-ports 7892
+    
+    # 重定向DNS流量
+    iptables -t nat -A MIHOMO_PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 53
+    iptables -t nat -A MIHOMO_PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 53
+    
+    # 将自定义链插入到PREROUTING链
+    if ! iptables -t nat -C PREROUTING -j MIHOMO_PREROUTING 2>/dev/null; then
+        iptables -t nat -I PREROUTING -j MIHOMO_PREROUTING
+    fi
+    
+    # 保存规则
+    if command -v iptables-save >/dev/null 2>&1; then
+        iptables-save > "$IPTABLES_RULES_FILE"
+        echo -e "${GREEN}✓ iptables规则已保存到 $IPTABLES_RULES_FILE${PLAIN}"
+    fi
+    
+    echo -e "${GREEN}✓ iptables规则配置成功${PLAIN}"
+    return 0
+}
+
+# 配置防火墙规则
+setup_firewall_rules() {
+    local firewall_type=$(detect_firewall_type)
+    
+    echo -e "${CYAN}检测到防火墙类型: $firewall_type${PLAIN}"
+    
+    case $firewall_type in
+        "nftables")
+            setup_nftables_rules
+            ;;
+        "iptables")
+            setup_iptables_rules
+            ;;
+        "none")
+            echo -e "${YELLOW}⚠ 未检测到防火墙，尝试安装iptables...${PLAIN}"
+            apt update && apt install -y iptables
+            if command -v iptables >/dev/null 2>&1; then
+                setup_iptables_rules
+            else
+                echo -e "${RED}✗ 无法安装防火墙工具，透明代理可能无法正常工作${PLAIN}"
+                return 1
+            fi
+            ;;
+    esac
+}
+
+# 清理nftables规则
+cleanup_nftables_rules() {
+    echo -e "${CYAN}正在清理nftables规则...${PLAIN}"
+    
+    # 删除mihomo表
+    if nft list tables 2>/dev/null | grep -q "table inet mihomo"; then
+        nft delete table inet mihomo
+        echo -e "${GREEN}✓ 已删除nftables mihomo表${PLAIN}"
+    fi
+    
+    # 从主配置文件中移除include
+    if [[ -f "$NFTABLES_CONF" ]]; then
+        sed -i '/include "\/etc\/nftables-mihomo.conf"/d' "$NFTABLES_CONF"
+    fi
+    
+    # 删除配置文件
+    if [[ -f "/etc/nftables-mihomo.conf" ]]; then
+        rm -f "/etc/nftables-mihomo.conf"
+        echo -e "${GREEN}✓ 已删除nftables配置文件${PLAIN}"
+    fi
+}
+
+# 清理iptables规则
+cleanup_iptables_rules() {
+    echo -e "${CYAN}正在清理iptables规则...${PLAIN}"
+    
+    # 从PREROUTING链中移除mihomo规则
+    iptables -t nat -D PREROUTING -j MIHOMO_PREROUTING 2>/dev/null || true
+    
+    # 删除自定义链
+    iptables -t nat -F MIHOMO_PREROUTING 2>/dev/null || true
+    iptables -t nat -X MIHOMO_PREROUTING 2>/dev/null || true
+    
+    # 删除规则文件
+    if [[ -f "$IPTABLES_RULES_FILE" ]]; then
+        rm -f "$IPTABLES_RULES_FILE"
+        echo -e "${GREEN}✓ 已删除iptables规则文件${PLAIN}"
+    fi
+    
+    echo -e "${GREEN}✓ iptables规则清理完成${PLAIN}"
+}
+
+# 清理防火墙规则
+cleanup_firewall_rules() {
+    local firewall_type=$(detect_firewall_type)
+    
+    case $firewall_type in
+        "nftables")
+            cleanup_nftables_rules
+            ;;
+        "iptables")
+            cleanup_iptables_rules
+            ;;
+        *)
+            echo -e "${YELLOW}⚠ 未检测到防火墙类型${PLAIN}"
+            ;;
+    esac
+}
+
+# 显示防火墙状态
+show_firewall_status() {
+    local firewall_type=$(detect_firewall_type)
+    
+    echo -e "\n${CYAN}防火墙状态:${PLAIN}"
+    echo -e "${YELLOW}• 防火墙类型: $firewall_type${PLAIN}"
+    
+    case $firewall_type in
+        "nftables")
+            if check_firewall_rules; then
+                echo -e "${GREEN}✓ nftables透明代理规则: 已配置${PLAIN}"
+                echo -e "${YELLOW}• 规则详情:${PLAIN}"
+                nft list table inet mihomo 2>/dev/null | head -20
+            else
+                echo -e "${RED}✗ nftables透明代理规则: 未配置${PLAIN}"
+            fi
+            ;;
+        "iptables")
+            if check_firewall_rules; then
+                echo -e "${GREEN}✓ iptables透明代理规则: 已配置${PLAIN}"
+                echo -e "${YELLOW}• 规则详情:${PLAIN}"
+                iptables -t nat -L MIHOMO_PREROUTING -n --line-numbers 2>/dev/null | head -10
+            else
+                echo -e "${RED}✗ iptables透明代理规则: 未配置${PLAIN}"
+            fi
+            ;;
+        *)
+            echo -e "${RED}✗ 防火墙: 未安装或未启用${PLAIN}"
+            ;;
+    esac
+}
+
 # 检查服务状态
 check_status() {
     clear
@@ -518,6 +730,9 @@ check_status() {
         echo -e "${RED}✗ 二进制文件: 不存在${PLAIN}"
     fi
     
+    # 显示防火墙状态
+    show_firewall_status
+    
     echo -e "\n${CYAN}最近日志:${PLAIN}"
     journalctl -u mihomo -n 5 --no-pager
     
@@ -538,38 +753,110 @@ show_usage_guide() {
     echo -e "${GREEN}管理密码: wallentv${PLAIN}"
     echo
     
-    echo -e "${YELLOW}使用方法一: DNS + 路由设置（推荐用于部分设备代理）${PLAIN}"
-    echo -e "${CYAN}1. 将设备DNS设置为: $main_ip${PLAIN}"
-    echo -e "${CYAN}2. 添加路由规则:${PLAIN}"
-    echo -e "   • 目标网段: 198.18.0.0/16"
-    echo -e "   • 网关: $main_ip"
+    # 检查防火墙规则状态
+    local firewall_configured=false
+    if check_firewall_rules; then
+        firewall_configured=true
+        echo -e "${GREEN}✓ 防火墙规则已自动配置，透明代理可用${PLAIN}"
+    else
+        echo -e "${RED}✗ 防火墙规则未配置，透明代理不可用${PLAIN}"
+        echo -e "${YELLOW}• 重新运行一键安装以自动配置防火墙规则${PLAIN}"
+    fi
     echo
     
-    echo -e "${YELLOW}使用方法二: 透明代理（推荐用于全局代理）${PLAIN}"
-    echo -e "${CYAN}1. 将设备网关设置为: $main_ip${PLAIN}"
-    echo -e "${CYAN}2. 将设备DNS设置为: $main_ip${PLAIN}"
+    echo -e "${YELLOW}使用方法一: 手动代理设置${PLAIN}"
+    echo -e "${CYAN}适用于: 单个设备或应用程序代理${PLAIN}"
+    echo -e "${CYAN}配置方法:${PLAIN}"
+    echo -e "   • HTTP代理: $main_ip:7891"
+    echo -e "   • SOCKS5代理: $main_ip:7892"
+    echo -e "   • 混合代理: $main_ip:7890 (推荐)"
     echo
+    
+    if $firewall_configured; then
+        echo -e "${YELLOW}使用方法二: 透明代理（推荐）${PLAIN}"
+        echo -e "${CYAN}适用于: 全局代理，无需在每个设备上配置${PLAIN}"
+        echo -e "${CYAN}配置方法:${PLAIN}"
+        echo -e "   1. 将设备网关设置为: $main_ip"
+        echo -e "   2. 将设备DNS设置为: $main_ip"
+        echo -e "   3. 所有流量将自动通过代理"
+        echo
+        
+        echo -e "${YELLOW}使用方法三: DNS + 路由设置${PLAIN}"
+        echo -e "${CYAN}适用于: 部分流量代理${PLAIN}"
+        echo -e "${CYAN}配置方法:${PLAIN}"
+        echo -e "   1. 将设备DNS设置为: $main_ip"
+        echo -e "   2. 添加路由规则:"
+        echo -e "      • 目标网段: 198.18.0.0/16"
+        echo -e "      • 网关: $main_ip"
+        echo
+    else
+        echo -e "${YELLOW}使用方法二: DNS + 路由设置${PLAIN}"
+        echo -e "${CYAN}适用于: 部分流量代理（需要防火墙规则支持）${PLAIN}"
+        echo -e "${CYAN}配置方法:${PLAIN}"
+        echo -e "   1. 将设备DNS设置为: $main_ip"
+        echo -e "   2. 添加路由规则:"
+        echo -e "      • 目标网段: 198.18.0.0/16"
+        echo -e "      • 网关: $main_ip"
+        echo -e "${RED}   注意: 需要先配置防火墙规则才能正常工作${PLAIN}"
+        echo
+    fi
     
     echo -e "${YELLOW}路由器配置示例:${PLAIN}"
-    echo -e "${CYAN}# 添加静态路由（OpenWrt/LEDE）${PLAIN}"
+    echo -e "${CYAN}# OpenWrt/LEDE 路由器配置${PLAIN}"
+    if $firewall_configured; then
+        echo -e "# 方法1: 透明代理（全局）"
+        echo -e "uci set network.lan.gateway='$main_ip'"
+        echo -e "uci set dhcp.@dnsmasq[0].server='$main_ip'"
+        echo -e "uci commit && /etc/init.d/network restart"
+        echo
+    fi
+    echo -e "# 方法2: 静态路由（部分代理）"
     echo -e "ip route add 198.18.0.0/16 via $main_ip"
-    echo
-    echo -e "${CYAN}# 修改DHCP DNS服务器${PLAIN}"
     echo -e "uci set dhcp.@dnsmasq[0].server='$main_ip'"
-    echo -e "uci commit dhcp"
-    echo -e "/etc/init.d/dnsmasq restart"
+    echo -e "uci commit dhcp && /etc/init.d/dnsmasq restart"
     echo
     
     echo -e "${YELLOW}代理端口说明:${PLAIN}"
     echo -e "${CYAN}• 混合代理端口: $main_ip:7890 (HTTP + SOCKS5)${PLAIN}"
     echo -e "${CYAN}• HTTP代理端口: $main_ip:7891${PLAIN}"
     echo -e "${CYAN}• SOCKS5代理端口: $main_ip:7892${PLAIN}"
+    echo -e "${CYAN}• DNS服务端口: $main_ip:53${PLAIN}"
+    echo
+    
+    echo -e "${YELLOW}防火墙规则说明:${PLAIN}"
+    local firewall_type=$(detect_firewall_type)
+    echo -e "${CYAN}• 当前防火墙类型: $firewall_type${PLAIN}"
+    if $firewall_configured; then
+        echo -e "${GREEN}• 透明代理规则: 已配置${PLAIN}"
+        echo -e "${CYAN}• 自动重定向TCP流量到端口7892${PLAIN}"
+        echo -e "${CYAN}• 自动重定向DNS流量到端口53${PLAIN}"
+        echo -e "${CYAN}• 排除本机和SSH流量，防止连接中断${PLAIN}"
+    else
+        echo -e "${RED}• 透明代理规则: 未配置${PLAIN}"
+        echo -e "${YELLOW}• 请重新运行安装程序来自动配置防火墙规则${PLAIN}"
+    fi
     echo
     
     echo -e "${YELLOW}配置文件位置:${PLAIN}"
     echo -e "${CYAN}• 主配置: $CONFIG_DIR/config.yaml${PLAIN}"
     echo -e "${CYAN}• 编辑命令: nano $CONFIG_DIR/config.yaml${PLAIN}"
     echo -e "${CYAN}• 重启生效: systemctl restart mihomo${PLAIN}"
+    echo
+    
+    echo -e "${YELLOW}故障排除:${PLAIN}"
+    echo -e "${CYAN}• 查看服务状态: systemctl status mihomo${PLAIN}"
+    echo -e "${CYAN}• 查看服务日志: journalctl -u mihomo -f${PLAIN}"
+    echo -e "${CYAN}• 检查端口监听: ss -tlnp | grep mihomo${PLAIN}"
+    if $firewall_configured; then
+        case $firewall_type in
+            "nftables")
+                echo -e "${CYAN}• 查看防火墙规则: nft list table inet mihomo${PLAIN}"
+                ;;
+            "iptables")
+                echo -e "${CYAN}• 查看防火墙规则: iptables -t nat -L MIHOMO_PREROUTING${PLAIN}"
+                ;;
+        esac
+    fi
     
     read -p "按任意键返回主菜单..." key
 }
@@ -585,6 +872,7 @@ uninstall_mihomo() {
     echo -e "${RED}• 停止并删除Mihomo服务${PLAIN}"
     echo -e "${RED}• 删除二进制文件和配置文件${PLAIN}"
     echo -e "${RED}• 删除systemd服务文件${PLAIN}"
+    echo -e "${RED}• 清理防火墙规则${PLAIN}"
     echo
     
     read -p "确定要卸载Mihomo吗? (y/n): " confirm
@@ -605,6 +893,9 @@ uninstall_mihomo() {
         systemctl disable mihomo
         echo -e "${GREEN}✓ 已禁用Mihomo服务${PLAIN}"
     fi
+    
+    # 清理防火墙规则
+    cleanup_firewall_rules
     
     # 删除服务文件
     if [[ -f "$SERVICE_FILE" ]]; then
@@ -661,33 +952,41 @@ one_key_install() {
             return
         fi
         stop_service
+        cleanup_firewall_rules
     fi
     
     # 执行安装步骤
-    echo -e "${CYAN}[1/7] 检查系统环境...${PLAIN}"
+    echo -e "${CYAN}[1/8] 检查系统环境...${PLAIN}"
     check_root
     check_os
     
-    echo -e "${CYAN}[2/7] 配置系统环境...${PLAIN}"
+    echo -e "${CYAN}[2/8] 配置系统环境...${PLAIN}"
     if ! setup_environment; then
-        echo -e "${YELLOW}⚠ 环境配置失败，尝试系统修复...${PLAIN}"
-        fix_system
-        setup_environment
+        echo -e "${YELLOW}⚠ 环境配置失败，请检查系统状态后重试${PLAIN}"
+        echo -e "${RED}安装过程中出现错误，请检查日志${PLAIN}"
+        read -p "按任意键返回主菜单..." key
+        return
     fi
     
-    echo -e "${CYAN}[3/7] 下载Mihomo二进制文件...${PLAIN}"
+    echo -e "${CYAN}[3/8] 下载Mihomo二进制文件...${PLAIN}"
     download_mihomo
     
-    echo -e "${CYAN}[4/7] 下载UI界面...${PLAIN}"
+    echo -e "${CYAN}[4/8] 下载UI界面...${PLAIN}"
     download_ui
     
-    echo -e "${CYAN}[5/7] 创建配置文件...${PLAIN}"
+    echo -e "${CYAN}[5/8] 创建配置文件...${PLAIN}"
     create_config
     
-    echo -e "${CYAN}[6/7] 创建系统服务...${PLAIN}"
+    echo -e "${CYAN}[6/8] 创建系统服务...${PLAIN}"
     create_service
     
-    echo -e "${CYAN}[7/7] 启动服务...${PLAIN}"
+    echo -e "${CYAN}[7/8] 配置防火墙规则...${PLAIN}"
+    if ! setup_firewall_rules; then
+        echo -e "${YELLOW}⚠ 防火墙规则配置失败，透明代理可能无法正常工作${PLAIN}"
+        echo -e "${YELLOW}您可以稍后重新运行安装程序来重新配置防火墙规则${PLAIN}"
+    fi
+    
+    echo -e "${CYAN}[8/8] 启动服务...${PLAIN}"
     if start_service; then
         local main_ip=$(get_main_ip)
         echo -e "\n${GREEN}======================================================${PLAIN}"
@@ -699,6 +998,16 @@ one_key_install() {
         echo -e "${YELLOW}HTTP代理: ${GREEN}$main_ip:7891${PLAIN}"
         echo -e "${YELLOW}SOCKS代理: ${GREEN}$main_ip:7892${PLAIN}"
         echo -e "${YELLOW}DNS服务: ${GREEN}$main_ip:53${PLAIN}"
+        echo -e "${GREEN}======================================================${PLAIN}"
+        echo -e "${YELLOW}透明代理配置:${PLAIN}"
+        if check_firewall_rules; then
+            echo -e "${GREEN}✓ 防火墙规则已配置，透明代理应该可以正常工作${PLAIN}"
+            echo -e "${YELLOW}• 将客户端网关设置为: $main_ip${PLAIN}"
+            echo -e "${YELLOW}• 将客户端DNS设置为: $main_ip${PLAIN}"
+        else
+            echo -e "${RED}✗ 防火墙规则配置失败${PLAIN}"
+            echo -e "${YELLOW}• 请重新运行安装程序来自动配置防火墙规则${PLAIN}"
+        fi
         echo -e "${GREEN}======================================================${PLAIN}"
         echo -e "${YELLOW}推荐下一步:${PLAIN}"
         echo -e "${YELLOW}1. 访问控制面板配置代理节点${PLAIN}"
@@ -725,9 +1034,7 @@ show_menu() {
         echo -e "${GREEN} [4] 重启服务${PLAIN}"
         echo -e "${GREEN} [5] 查看状态${PLAIN}"
         echo -e "${GREEN} [6] 使用指南${PLAIN}"
-        echo -e "${GREEN} [7] 系统修复${PLAIN}"
-        echo -e "${GREEN} [8] 手动选择架构重装${PLAIN}"
-        echo -e "${GREEN} [9] 卸载 Mihomo${PLAIN}"
+        echo -e "${GREEN} [7] 卸载 Mihomo${PLAIN}"
         echo -e "${GREEN} [0] 退出脚本${PLAIN}"
         echo -e "${CYAN}======================================================${PLAIN}"
         
@@ -736,12 +1043,19 @@ show_menu() {
             local main_ip=$(get_main_ip)
             echo -e "${YELLOW}当前状态: ${GREEN}运行中${PLAIN}"
             echo -e "${YELLOW}控制面板: ${GREEN}http://$main_ip:9090${PLAIN}"
+            
+            # 显示防火墙状态
+            if check_firewall_rules; then
+                echo -e "${YELLOW}防火墙规则: ${GREEN}已配置${PLAIN}"
+            else
+                echo -e "${YELLOW}防火墙规则: ${RED}未配置${PLAIN}"
+            fi
         else
             echo -e "${YELLOW}当前状态: ${RED}未运行${PLAIN}"
         fi
         echo
         
-        read -p "请输入选择 [0-9]: " choice
+        read -p "请输入选择 [0-7]: " choice
         
         case $choice in
             1)
@@ -766,44 +1080,6 @@ show_menu() {
                 show_usage_guide
                 ;;
             7)
-                fix_system
-                ;;
-            8)
-                # 手动选择架构重装
-                clear
-                echo -e "${CYAN}======================================================${PLAIN}"
-                echo -e "${CYAN}              手动选择架构重装${PLAIN}"
-                echo -e "${CYAN}======================================================${PLAIN}"
-                
-                # 停止现有服务
-                if systemctl is-active --quiet mihomo; then
-                    stop_service
-                fi
-                
-                # 删除现有二进制文件
-                if [[ -f "$BINARY_FILE" ]]; then
-                    rm -f "$BINARY_FILE"
-                    echo -e "${GREEN}✓ 已删除现有二进制文件${PLAIN}"
-                fi
-                
-                # 手动选择架构
-                local selected_arch=$(manual_architecture_selection)
-                echo -e "${GREEN}选择的架构: $selected_arch${PLAIN}"
-                
-                # 重新下载
-                echo -e "${CYAN}正在重新下载 Mihomo...${PLAIN}"
-                
-                # 临时覆盖架构检测函数
-                detect_architecture() {
-                    echo "$selected_arch"
-                }
-                
-                download_mihomo
-                start_service
-                
-                read -p "按任意键继续..." key
-                ;;
-            9)
                 uninstall_mihomo
                 ;;
             0)
