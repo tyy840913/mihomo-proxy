@@ -170,7 +170,18 @@ setup_environment() {
     if ! grep -q "net.ipv6.conf.all.forwarding=1" /etc/sysctl.conf; then
         echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf
     fi
+    
+    # 立即应用IP转发设置
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
     sysctl -p >/dev/null 2>&1
+    
+    # 验证IP转发是否生效
+    if [[ $(cat /proc/sys/net/ipv4/ip_forward) == "1" ]]; then
+        echo -e "${GREEN}✓ IPv4转发已启用${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ IPv4转发启用失败${PLAIN}"
+    fi
     
     echo -e "${GREEN}✓ 系统环境配置完成${PLAIN}"
 }
@@ -272,6 +283,16 @@ create_config() {
         chmod 644 "$CONFIG_DIR/config.yaml"
         echo -e "${GREEN}✓ 配置文件下载完成${PLAIN}"
         echo -e "${YELLOW}配置文件位置: $CONFIG_DIR/config.yaml${PLAIN}"
+        
+        # 预下载MMDB文件，避免启动时下载失败
+        echo -e "${CYAN}正在预下载地理位置数据库...${PLAIN}"
+        mkdir -p "$CONFIG_DIR"
+        if wget -O "$CONFIG_DIR/Country.mmdb" "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb" 2>/dev/null; then
+            echo -e "${GREEN}✓ 地理位置数据库下载完成${PLAIN}"
+        else
+            echo -e "${YELLOW}⚠ 地理位置数据库下载失败，服务启动时会自动下载${PLAIN}"
+        fi
+        
     else
         echo -e "${YELLOW}⚠ 配置文件下载失败，创建默认配置...${PLAIN}"
         # 创建一个基本的默认配置
@@ -340,8 +361,6 @@ Wants=network.target
 Type=simple
 User=root
 ExecStart=$BINARY_FILE -d $CONFIG_DIR
-ExecStartPost=/bin/bash -c 'sleep 2 && $0 enable-firewall-rules'
-ExecStopPost=/bin/bash -c '$0 disable-firewall-rules'
 Restart=always
 RestartSec=5
 KillMode=mixed
@@ -1053,6 +1072,32 @@ uninstall_mihomo() {
     read -p "按任意键返回主菜单..." key
 }
 
+# 验证配置文件
+validate_config() {
+    echo -e "${CYAN}正在验证配置文件...${PLAIN}"
+    
+    if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then
+        echo -e "${RED}✗ 配置文件不存在${PLAIN}"
+        return 1
+    fi
+    
+    # 使用mihomo测试配置文件
+    if [[ -f "$BINARY_FILE" ]]; then
+        if $BINARY_FILE -t -d "$CONFIG_DIR" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ 配置文件验证通过${PLAIN}"
+            return 0
+        else
+            echo -e "${RED}✗ 配置文件验证失败${PLAIN}"
+            echo -e "${YELLOW}详细错误信息:${PLAIN}"
+            $BINARY_FILE -t -d "$CONFIG_DIR"
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}⚠ 无法验证配置文件（二进制文件不存在）${PLAIN}"
+        return 1
+    fi
+}
+
 # 一键安装
 one_key_install() {
     clear
@@ -1233,22 +1278,12 @@ main() {
         fi
     fi
     
-    # 处理内部调用参数
-    case "$1" in
-        "enable-firewall-rules")
-            setup_firewall_rules
-            exit 0
-            ;;
-        "disable-firewall-rules")
-            cleanup_firewall_rules
-            exit 0
-            ;;
-        "--auto-install")
-            echo -e "${CYAN}执行自动安装模式...${PLAIN}"
-            one_key_install
-            exit 0
-            ;;
-    esac
+    # 处理命令行参数
+    if [[ "$1" == "--auto-install" ]]; then
+        echo -e "${CYAN}执行自动安装模式...${PLAIN}"
+        one_key_install
+        exit 0
+    fi
     
     # 显示主菜单
     show_menu
