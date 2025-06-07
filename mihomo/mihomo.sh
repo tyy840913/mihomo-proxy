@@ -476,9 +476,9 @@ check_firewall_rules() {
             fi
             ;;
         "iptables")
-            # 检查是否存在MIHOMO_PREROUTING链和MIHOMO_MANGLE链
+            # 检查是否存在MIHOMO_PREROUTING链和实际的REDIRECT规则
             if iptables -t nat -L PREROUTING 2>/dev/null | grep -q "MIHOMO_PREROUTING" && \
-               iptables -t mangle -L PREROUTING 2>/dev/null | grep -q "MIHOMO_MANGLE"; then
+               iptables -t nat -L MIHOMO_PREROUTING 2>/dev/null | grep -q "REDIRECT"; then
                 return 0
             else
                 return 1
