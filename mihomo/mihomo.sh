@@ -563,6 +563,9 @@ setup_iptables_rules() {
     
     echo -e "${CYAN}正在配置iptables透明代理规则...${PLAIN}"
     
+    # 清理可能存在的旧规则
+    cleanup_iptables_rules
+    
     # 创建自定义链
     iptables -t nat -N MIHOMO_PREROUTING 2>/dev/null || true
     iptables -t nat -F MIHOMO_PREROUTING
@@ -570,13 +573,15 @@ setup_iptables_rules() {
     iptables -t mangle -F MIHOMO_MANGLE
     
     # NAT表规则 - TCP重定向
+    echo -e "${CYAN}配置NAT表规则...${PLAIN}"
+    
     # 排除本机流量
     iptables -t nat -A MIHOMO_PREROUTING -s $main_ip -j RETURN
     
-    # 排除SSH端口
+    # 排除SSH端口，防止连接中断
     iptables -t nat -A MIHOMO_PREROUTING -p tcp --dport $ssh_port -j RETURN
     
-    # 排除局域网流量
+    # 排除局域网和特殊地址
     iptables -t nat -A MIHOMO_PREROUTING -d 0.0.0.0/8 -j RETURN
     iptables -t nat -A MIHOMO_PREROUTING -d 10.0.0.0/8 -j RETURN
     iptables -t nat -A MIHOMO_PREROUTING -d 127.0.0.0/8 -j RETURN
@@ -586,11 +591,13 @@ setup_iptables_rules() {
     iptables -t nat -A MIHOMO_PREROUTING -d 224.0.0.0/4 -j RETURN
     iptables -t nat -A MIHOMO_PREROUTING -d 240.0.0.0/4 -j RETURN
     
-    # 重定向TCP流量到Mihomo透明代理端口
+    # 重定向TCP流量到Mihomo透明代理端口 - 这是关键规则
     iptables -t nat -A MIHOMO_PREROUTING -p tcp -j REDIRECT --to-ports 7892
     
     # MANGLE表规则 - UDP透明代理
-    # 排除局域网流量
+    echo -e "${CYAN}配置MANGLE表规则...${PLAIN}"
+    
+    # 排除局域网和特殊地址
     iptables -t mangle -A MIHOMO_MANGLE -d 0.0.0.0/8 -j RETURN
     iptables -t mangle -A MIHOMO_MANGLE -d 10.0.0.0/8 -j RETURN
     iptables -t mangle -A MIHOMO_MANGLE -d 127.0.0.0/8 -j RETURN
@@ -603,20 +610,44 @@ setup_iptables_rules() {
     # 标记UDP包用于TPROXY
     iptables -t mangle -A MIHOMO_MANGLE -p udp -j TPROXY --on-port 7892 --tproxy-mark 0x1/0x1
     
-    # 应用规则
-    # 将自定义链插入到PREROUTING链
+    # 应用规则到主链
+    echo -e "${CYAN}应用规则到主链...${PLAIN}"
+    
+    # 将自定义链插入到PREROUTING链的开头
     if ! iptables -t nat -C PREROUTING -j MIHOMO_PREROUTING 2>/dev/null; then
-        iptables -t nat -I PREROUTING -j MIHOMO_PREROUTING
+        iptables -t nat -I PREROUTING 1 -j MIHOMO_PREROUTING
     fi
     
     if ! iptables -t mangle -C PREROUTING -j MIHOMO_MANGLE 2>/dev/null; then
-        iptables -t mangle -I PREROUTING -j MIHOMO_MANGLE
+        iptables -t mangle -I PREROUTING 1 -j MIHOMO_MANGLE
     fi
     
     # 配置路由规则支持TPROXY
+    echo -e "${CYAN}配置路由规则...${PLAIN}"
+    
     # 添加路由表规则
     ip rule add fwmark 1 table 100 2>/dev/null || true
     ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
+    
+    # 验证规则是否正确配置
+    echo -e "${CYAN}验证规则配置...${PLAIN}"
+    
+    # 检查NAT表规则
+    local nat_rules=$(iptables -t nat -L MIHOMO_PREROUTING -n | grep -c "REDIRECT")
+    if [[ $nat_rules -gt 0 ]]; then
+        echo -e "${GREEN}✓ NAT表REDIRECT规则已配置${PLAIN}"
+    else
+        echo -e "${RED}✗ NAT表REDIRECT规则配置失败${PLAIN}"
+        return 1
+    fi
+    
+    # 检查MANGLE表规则
+    local mangle_rules=$(iptables -t mangle -L MIHOMO_MANGLE -n | grep -c "TPROXY")
+    if [[ $mangle_rules -gt 0 ]]; then
+        echo -e "${GREEN}✓ MANGLE表TPROXY规则已配置${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠ MANGLE表TPROXY规则配置失败（可能不支持TPROXY）${PLAIN}"
+    fi
     
     # 保存规则
     if command -v iptables-save >/dev/null 2>&1; then
@@ -624,7 +655,12 @@ setup_iptables_rules() {
         echo -e "${GREEN}✓ iptables规则已保存到 $IPTABLES_RULES_FILE${PLAIN}"
     fi
     
-    echo -e "${GREEN}✓ iptables规则配置成功${PLAIN}"
+    echo -e "${GREEN}✓ iptables规则配置完成${PLAIN}"
+    
+    # 显示配置的规则
+    echo -e "${CYAN}当前NAT表规则:${PLAIN}"
+    iptables -t nat -L MIHOMO_PREROUTING -n --line-numbers
+    
     return 0
 }
 
