@@ -49,8 +49,8 @@ docker network create -d macvlan --subnet=192.168.88.0/24 --gateway=192.168.88.1
 
 ```bash
 docker run -d --privileged \
-  --name=mihomo --restart=always \
-  --network mnet --ip 192.168.88.4 \
+  --name=mihomo10 --restart=always \
+  --network opnet --ip 192.168.88.10 \
   -v /etc/mihomo:/root/.config/mihomo/ \
   metacubex/mihomo:latest
 ```
