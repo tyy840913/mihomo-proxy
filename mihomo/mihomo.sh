@@ -41,8 +41,7 @@ BINARY_DIR="/opt"
 BINARY_FILE="/opt/mihomo"
 SERVICE_FILE="/etc/systemd/system/mihomo.service"
 LOG_FILE="/var/log/mihomo.log"
-NFTABLES_CONF="/etc/nftables.conf"
-IPTABLES_RULES_FILE="/etc/mihomo-iptables.rules"
+
 
 # 颜色代码
 RED="\033[31m"
@@ -537,11 +536,8 @@ start_service() {
             
             # 自动启用透明代理规则
             echo -e "${CYAN}正在启用透明代理规则...${PLAIN}"
-            if setup_firewall_rules; then
-                echo -e "${GREEN}✓ 透明代理规则已启用${PLAIN}"
-            else
-                echo -e "${YELLOW}⚠ 透明代理规则启用失败${PLAIN}"
-            fi
+            setup_simple_rules
+            echo -e "${GREEN}✓ 透明代理规则已启用${PLAIN}"
             
             return 0
         else
@@ -561,7 +557,7 @@ stop_service() {
     
     # 先清理透明代理规则
     echo -e "${CYAN}正在清理透明代理规则...${PLAIN}"
-    cleanup_firewall_rules
+    cleanup_simple_rules
     
     if systemctl stop mihomo; then
         echo -e "${GREEN}✓ Mihomo服务已停止${PLAIN}"
@@ -577,7 +573,7 @@ restart_service() {
     
     # 先清理透明代理规则
     echo -e "${CYAN}正在清理透明代理规则...${PLAIN}"
-    cleanup_firewall_rules
+    cleanup_simple_rules
     
     if systemctl restart mihomo; then
         sleep 3
@@ -586,11 +582,8 @@ restart_service() {
             
             # 重新启用透明代理规则
             echo -e "${CYAN}正在启用透明代理规则...${PLAIN}"
-            if setup_firewall_rules; then
-                echo -e "${GREEN}✓ 透明代理规则已启用${PLAIN}"
-            else
-                echo -e "${YELLOW}⚠ 透明代理规则启用失败${PLAIN}"
-            fi
+            setup_simple_rules
+            echo -e "${GREEN}✓ 透明代理规则已启用${PLAIN}"
         else
             echo -e "${RED}✗ Mihomo服务重启失败${PLAIN}"
             echo -e "${YELLOW}查看错误日志: journalctl -u mihomo -n 20${PLAIN}"
@@ -600,488 +593,54 @@ restart_service() {
     fi
 }
 
-# 检测防火墙类型
-detect_firewall_type() {
-    if command -v nft >/dev/null 2>&1 && systemctl is-active --quiet nftables 2>/dev/null; then
-        echo "nftables"
-    elif command -v iptables >/dev/null 2>&1; then
-        echo "iptables"
-    else
-        echo "none"
-    fi
-}
-
-# 检查防火墙规则是否存在
-check_firewall_rules() {
-    local firewall_type=$(detect_firewall_type)
-    
-    case $firewall_type in
-        "nftables")
-            if nft list tables 2>/dev/null | grep -q "table inet mihomo"; then
-                return 0
-            else
-                return 1
-            fi
-            ;;
-        "iptables")
-            # 检查是否存在MIHOMO_PREROUTING链和实际的REDIRECT规则
-            if iptables -t nat -L PREROUTING 2>/dev/null | grep -q "MIHOMO_PREROUTING" && \
-               iptables -t nat -L MIHOMO_PREROUTING 2>/dev/null | grep -q "REDIRECT"; then
-                return 0
-            else
-                return 1
-            fi
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-# 配置nftables规则
-setup_nftables_rules() {
+# 配置简单的透明代理规则（基础版）
+setup_simple_rules() {
     local main_ip=$(get_main_ip)
     local ssh_port=$(ss -tlnp | grep sshd | grep -oP ':\K\d+' | head -n1)
     [[ -z "$ssh_port" ]] && ssh_port="22"
     
-    echo -e "${CYAN}正在配置nftables透明代理规则...${PLAIN}"
+    echo -e "${CYAN}配置基础透明代理规则...${PLAIN}"
     
-    # 创建mihomo专用的nftables配置
-    cat > /etc/nftables-mihomo.conf << EOF
-#!/usr/sbin/nft -f
-
-# Mihomo透明代理规则
-table inet mihomo {
-    chain prerouting {
-        type nat hook prerouting priority dstnat; policy accept;
-        
-        # 排除本机流量
-        ip saddr $main_ip return
-        
-        # 排除SSH端口，防止连接中断
-        tcp dport $ssh_port return
-        
-        # 排除局域网流量
-        ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return
-        
-        # 重定向TCP流量到Mihomo透明代理端口
-        ip protocol tcp redirect to :7892
-        
-        # 重定向DNS流量到Mihomo DNS端口
-        udp dport 53 redirect to :53
-        tcp dport 53 redirect to :53
-    }
+    # 简单的iptables规则
+    iptables -t nat -F 2>/dev/null || true
+    iptables -t nat -X 2>/dev/null || true
     
-    chain output {
-        type nat hook output priority -100; policy accept;
-        
-        # 排除本机流量
-        ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return
-        
-        # 重定向本机TCP流量（可选）
-        # ip protocol tcp redirect to :7892
-    }
+    # 基础重定向规则
+    iptables -t nat -A PREROUTING -s $main_ip -j RETURN
+    iptables -t nat -A PREROUTING -p tcp --dport $ssh_port -j RETURN
+    iptables -t nat -A PREROUTING -d 127.0.0.0/8 -j RETURN
+    iptables -t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN
+    iptables -t nat -A PREROUTING -d 172.16.0.0/12 -j RETURN
+    iptables -t nat -A PREROUTING -d 192.168.0.0/16 -j RETURN
+    iptables -t nat -A PREROUTING -p tcp -j REDIRECT --to-ports 7892
+    
+    # MASQUERADE规则
+    local external_interface=$(ip route | grep default | awk '{print $5}' | head -n1)
+    iptables -t nat -A POSTROUTING -o $external_interface -j MASQUERADE 2>/dev/null || true
+    
+    echo -e "${GREEN}✓ 基础规则配置完成${PLAIN}"
 }
-EOF
-    
-    # 应用规则
-    if nft -f /etc/nftables-mihomo.conf; then
-        echo -e "${GREEN}✓ nftables规则配置成功${PLAIN}"
-        
-        # 将规则添加到主配置文件（如果存在）
-        if [[ -f "$NFTABLES_CONF" ]]; then
-            if ! grep -q "include \"/etc/nftables-mihomo.conf\"" "$NFTABLES_CONF"; then
-                echo 'include "/etc/nftables-mihomo.conf"' >> "$NFTABLES_CONF"
-                echo -e "${GREEN}✓ 已将规则添加到主配置文件${PLAIN}"
-            fi
-        fi
-        
+
+# 清理规则
+cleanup_simple_rules() {
+    echo -e "${CYAN}清理透明代理规则...${PLAIN}"
+    iptables -t nat -F 2>/dev/null || true
+    iptables -t nat -X 2>/dev/null || true
+    echo -e "${GREEN}✓ 规则清理完成${PLAIN}"
+}
+
+# 检查规则
+check_simple_rules() {
+    if iptables -t nat -L PREROUTING 2>/dev/null | grep -q "REDIRECT.*7892"; then
         return 0
     else
-        echo -e "${RED}✗ nftables规则配置失败${PLAIN}"
         return 1
     fi
 }
 
-# 配置iptables规则
-setup_iptables_rules() {
-    local main_ip=$(get_main_ip)
-    local ssh_port=$(ss -tlnp | grep sshd | grep -oP ':\K\d+' | head -n1)
-    [[ -z "$ssh_port" ]] && ssh_port="22"
-    
-    echo -e "${CYAN}正在配置iptables透明代理规则...${PLAIN}"
-    
-    # 获取外部网络接口
-    local external_interface=$(ip route | grep default | awk '{print $5}' | head -n1)
-    if [[ -z "$external_interface" ]]; then
-        echo -e "${YELLOW}⚠ 无法检测外部网络接口，使用默认值${PLAIN}"
-        external_interface="eth0"
-    fi
-    echo -e "${YELLOW}外部网络接口: $external_interface${PLAIN}"
-    
-    # 先清理可能存在的旧规则
-    echo -e "${CYAN}清理旧规则...${PLAIN}"
-    iptables -t nat -D PREROUTING -j MIHOMO_PREROUTING 2>/dev/null || true
-    iptables -t mangle -D PREROUTING -j MIHOMO_MANGLE 2>/dev/null || true
-    iptables -t nat -D POSTROUTING -o $external_interface -j MASQUERADE 2>/dev/null || true
-    iptables -t nat -F MIHOMO_PREROUTING 2>/dev/null || true
-    iptables -t nat -X MIHOMO_PREROUTING 2>/dev/null || true
-    iptables -t mangle -F MIHOMO_MANGLE 2>/dev/null || true
-    iptables -t mangle -X MIHOMO_MANGLE 2>/dev/null || true
-    
-    # 创建自定义链
-    echo -e "${CYAN}创建自定义链...${PLAIN}"
-    if ! iptables -t nat -N MIHOMO_PREROUTING 2>/dev/null; then
-        echo -e "${YELLOW}⚠ NAT链创建失败，可能已存在${PLAIN}"
-    fi
-    if ! iptables -t mangle -N MIHOMO_MANGLE 2>/dev/null; then
-        echo -e "${YELLOW}⚠ MANGLE链创建失败，可能已存在${PLAIN}"
-    fi
-    
-    # NAT表规则 - TCP重定向
-    echo -e "${CYAN}配置NAT表规则...${PLAIN}"
-    
-    # 排除本机流量
-    iptables -t nat -A MIHOMO_PREROUTING -s $main_ip -j RETURN
-    
-    # 排除SSH端口，防止连接中断
-    iptables -t nat -A MIHOMO_PREROUTING -p tcp --dport $ssh_port -j RETURN
-    
-    # 排除Mihomo控制端口
-    iptables -t nat -A MIHOMO_PREROUTING -p tcp --dport 9090 -j RETURN
-    
-    # 排除局域网流量
-    iptables -t nat -A MIHOMO_PREROUTING -d 0.0.0.0/8 -j RETURN
-    iptables -t nat -A MIHOMO_PREROUTING -d 10.0.0.0/8 -j RETURN
-    iptables -t nat -A MIHOMO_PREROUTING -d 127.0.0.0/8 -j RETURN
-    iptables -t nat -A MIHOMO_PREROUTING -d 169.254.0.0/16 -j RETURN
-    iptables -t nat -A MIHOMO_PREROUTING -d 172.16.0.0/12 -j RETURN
-    iptables -t nat -A MIHOMO_PREROUTING -d 192.168.0.0/16 -j RETURN
-    iptables -t nat -A MIHOMO_PREROUTING -d 224.0.0.0/4 -j RETURN
-    iptables -t nat -A MIHOMO_PREROUTING -d 240.0.0.0/4 -j RETURN
-    
-    # 重定向TCP流量到Mihomo透明代理端口
-    iptables -t nat -A MIHOMO_PREROUTING -p tcp -j REDIRECT --to-ports 7892
-    
-    # MANGLE表规则 - UDP透明代理（如果支持）
-    echo -e "${CYAN}配置MANGLE表规则...${PLAIN}"
-    if iptables -t mangle -A MIHOMO_MANGLE -d 0.0.0.0/8 -j RETURN 2>/dev/null; then
-        iptables -t mangle -A MIHOMO_MANGLE -d 10.0.0.0/8 -j RETURN
-        iptables -t mangle -A MIHOMO_MANGLE -d 127.0.0.0/8 -j RETURN
-        iptables -t mangle -A MIHOMO_MANGLE -d 169.254.0.0/16 -j RETURN
-        iptables -t mangle -A MIHOMO_MANGLE -d 172.16.0.0/12 -j RETURN
-        iptables -t mangle -A MIHOMO_MANGLE -d 192.168.0.0/16 -j RETURN
-        iptables -t mangle -A MIHOMO_MANGLE -d 224.0.0.0/4 -j RETURN
-        iptables -t mangle -A MIHOMO_MANGLE -d 240.0.0.0/4 -j RETURN
-        
-        # 标记UDP包用于TPROXY（如果支持）
-        if iptables -t mangle -A MIHOMO_MANGLE -p udp -j TPROXY --on-port 7892 --tproxy-mark 0x1/0x1 2>/dev/null; then
-            echo -e "${GREEN}✓ UDP透明代理(TPROXY)支持已启用${PLAIN}"
-        else
-            echo -e "${YELLOW}⚠ 系统不支持TPROXY，跳过UDP透明代理${PLAIN}"
-            # 清理MANGLE链，因为不支持TPROXY
-            iptables -t mangle -F MIHOMO_MANGLE 2>/dev/null || true
-        fi
-    else
-        echo -e "${YELLOW}⚠ MANGLE表配置失败，跳过UDP透明代理${PLAIN}"
-    fi
-    
-    # 应用规则到主链
-    echo -e "${CYAN}应用规则到主链...${PLAIN}"
-    
-    # 将自定义链插入到PREROUTING链
-    if iptables -t nat -I PREROUTING -j MIHOMO_PREROUTING 2>/dev/null; then
-        echo -e "${GREEN}✓ NAT PREROUTING规则已应用${PLAIN}"
-    else
-        echo -e "${RED}✗ NAT PREROUTING规则应用失败${PLAIN}"
-        return 1
-    fi
-    
-    # 应用MANGLE规则（如果配置了）
-    if iptables -t mangle -L MIHOMO_MANGLE -n 2>/dev/null | grep -q "TPROXY"; then
-        if iptables -t mangle -I PREROUTING -j MIHOMO_MANGLE 2>/dev/null; then
-            echo -e "${GREEN}✓ MANGLE PREROUTING规则已应用${PLAIN}"
-        else
-            echo -e "${YELLOW}⚠ MANGLE PREROUTING规则应用失败${PLAIN}"
-        fi
-    fi
-    
-    # 添加出站流量的源地址转换（MASQUERADE）
-    echo -e "${CYAN}配置出站流量伪装...${PLAIN}"
-    if iptables -t nat -C POSTROUTING -o $external_interface -j MASQUERADE 2>/dev/null; then
-        echo -e "${YELLOW}⚠ MASQUERADE规则已存在${PLAIN}"
-    else
-        if iptables -t nat -A POSTROUTING -o $external_interface -j MASQUERADE 2>/dev/null; then
-            echo -e "${GREEN}✓ MASQUERADE规则已添加${PLAIN}"
-        else
-            echo -e "${YELLOW}⚠ MASQUERADE规则添加失败，可能影响透明代理${PLAIN}"
-        fi
-    fi
-    
-    # 配置路由规则支持TPROXY（如果启用了TPROXY）
-    if iptables -t mangle -L MIHOMO_MANGLE -n 2>/dev/null | grep -q "TPROXY"; then
-        echo -e "${CYAN}配置TPROXY路由规则...${PLAIN}"
-        # 删除可能存在的旧规则
-        ip rule del fwmark 1 table 100 2>/dev/null || true
-        ip route del local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
-        
-        # 添加新规则
-        if ip rule add fwmark 1 table 100 2>/dev/null && \
-           ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null; then
-            echo -e "${GREEN}✓ TPROXY路由规则配置成功${PLAIN}"
-        else
-            echo -e "${YELLOW}⚠ TPROXY路由规则配置失败${PLAIN}"
-        fi
-    fi
-    
-    # 验证规则配置
-    echo -e "${CYAN}验证规则配置...${PLAIN}"
-    
-    # 检查NAT表REDIRECT规则
-    local redirect_count=$(iptables -t nat -L MIHOMO_PREROUTING -n | grep -c "REDIRECT")
-    if [[ $redirect_count -gt 0 ]]; then
-        echo -e "${GREEN}✓ REDIRECT规则配置成功 (${redirect_count}条)${PLAIN}"
-    else
-        echo -e "${RED}✗ REDIRECT规则配置失败${PLAIN}"
-        return 1
-    fi
-    
-    # 检查MASQUERADE规则
-    if iptables -t nat -L POSTROUTING -n | grep -q "MASQUERADE"; then
-        echo -e "${GREEN}✓ MASQUERADE规则配置成功${PLAIN}"
-    else
-        echo -e "${YELLOW}⚠ MASQUERADE规则未配置${PLAIN}"
-    fi
-    
-    # 检查TPROXY规则（如果启用）
-    local tproxy_count=$(iptables -t mangle -L MIHOMO_MANGLE -n 2>/dev/null | grep -c "TPROXY" || echo "0")
-    if [[ $tproxy_count -gt 0 ]]; then
-        echo -e "${GREEN}✓ TPROXY规则配置成功 (${tproxy_count}条)${PLAIN}"
-    fi
-    
-    # 保存规则
-    if command -v iptables-save >/dev/null 2>&1; then
-        iptables-save > "$IPTABLES_RULES_FILE"
-        echo -e "${GREEN}✓ iptables规则已保存到 $IPTABLES_RULES_FILE${PLAIN}"
-    fi
-    
-    echo -e "${GREEN}✓ iptables规则配置完成${PLAIN}"
-    
-    # 强制生效机制 - 确保规则立即生效
-    echo -e "${CYAN}强制应用配置...${PLAIN}"
-    
-    # 1. 刷新连接跟踪表，清除旧连接状态
-    if command -v conntrack >/dev/null 2>&1; then
-        conntrack -F 2>/dev/null || true
-        echo -e "${GREEN}✓ 已清理连接跟踪表${PLAIN}"
-    fi
-    
-    # 2. 刷新路由缓存
-    ip route flush cache 2>/dev/null || true
-    
-    # 3. 强制重新应用sysctl设置
-    sysctl -p /etc/sysctl.d/99-mihomo.conf >/dev/null 2>&1
-    echo 1 > /proc/sys/net/ipv4/ip_forward
-    
-    # 4. 重新启用网络接口（但不断开连接）
-    if [[ -n "$external_interface" ]]; then
-        echo -e "${CYAN}刷新网络接口 $external_interface...${PLAIN}"
-        # 使用更轻量的方式刷新接口状态
-        ip link set $external_interface mtu $(cat /sys/class/net/$external_interface/mtu) 2>/dev/null || true
-    fi
-    
-    # 5. 测试规则是否真的生效
-    echo -e "${CYAN}测试规则生效状态...${PLAIN}"
-    local test_result=0
-    
-    # 测试NAT规则
-    if iptables -t nat -L MIHOMO_PREROUTING -n | grep -q "REDIRECT.*7892"; then
-        echo -e "${GREEN}✓ NAT重定向规则生效${PLAIN}"
-    else
-        echo -e "${YELLOW}⚠ NAT重定向规则可能未生效${PLAIN}"
-        ((test_result++))
-    fi
-    
-    # 测试MASQUERADE规则
-    if iptables -t nat -L POSTROUTING -n | grep -q "MASQUERADE.*$external_interface"; then
-        echo -e "${GREEN}✓ MASQUERADE规则生效${PLAIN}"
-    else
-        echo -e "${YELLOW}⚠ MASQUERADE规则可能未生效${PLAIN}"
-        ((test_result++))
-    fi
-    
-    # 测试IPv4转发
-    if [[ $(cat /proc/sys/net/ipv4/ip_forward) == "1" ]]; then
-        echo -e "${GREEN}✓ IPv4转发已启用${PLAIN}"
-    else
-        echo -e "${RED}✗ IPv4转发未启用${PLAIN}"
-        ((test_result++))
-    fi
-    
-    if [[ $test_result -eq 0 ]]; then
-        echo -e "${GREEN}✓ 所有配置已生效，透明代理应该可以立即工作${PLAIN}"
-    else
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${PLAIN}"
-        echo -e "${YELLOW}⚠ 检测到 $test_result 个潜在问题${PLAIN}"
-        echo -e "${YELLOW}如果透明代理不工作，建议：${PLAIN}"
-        echo -e "${CYAN}1. 重启 Mihomo 服务: systemctl restart mihomo${PLAIN}"
-        echo -e "${CYAN}2. 或重启系统确保所有配置生效: reboot${PLAIN}"
-        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${PLAIN}"
-    fi
-    
-    # 显示关键规则摘要
-    echo -e "${CYAN}规则配置摘要:${PLAIN}"
-    echo -e "${YELLOW}• 透明代理端口: 7892${PLAIN}"
-    echo -e "${YELLOW}• 排除SSH端口: $ssh_port${PLAIN}"
-    echo -e "${YELLOW}• 排除本机IP: $main_ip${PLAIN}"
-    echo -e "${YELLOW}• 外部接口: $external_interface${PLAIN}"
-    echo -e "${YELLOW}• REDIRECT规则: $redirect_count 条${PLAIN}"
-    echo -e "${YELLOW}• TPROXY规则: $tproxy_count 条${PLAIN}"
-    
-    return 0
-}
 
-# 配置防火墙规则
-setup_firewall_rules() {
-    local firewall_type=$(detect_firewall_type)
-    
-    echo -e "${CYAN}检测到防火墙类型: $firewall_type${PLAIN}"
-    
-    case $firewall_type in
-        "nftables")
-            setup_nftables_rules
-            ;;
-        "iptables")
-            setup_iptables_rules
-            ;;
-        "none")
-            echo -e "${YELLOW}⚠ 未检测到防火墙，尝试安装iptables...${PLAIN}"
-            apt update && apt install -y iptables
-            if command -v iptables >/dev/null 2>&1; then
-                setup_iptables_rules
-            else
-                echo -e "${RED}✗ 无法安装防火墙工具，透明代理可能无法正常工作${PLAIN}"
-                return 1
-            fi
-            ;;
-    esac
-}
 
-# 清理nftables规则
-cleanup_nftables_rules() {
-    echo -e "${CYAN}正在清理nftables规则...${PLAIN}"
-    
-    # 删除mihomo表
-    if nft list tables 2>/dev/null | grep -q "table inet mihomo"; then
-        nft delete table inet mihomo
-        echo -e "${GREEN}✓ 已删除nftables mihomo表${PLAIN}"
-    fi
-    
-    # 从主配置文件中移除include
-    if [[ -f "$NFTABLES_CONF" ]]; then
-        sed -i '/include "\/etc\/nftables-mihomo.conf"/d' "$NFTABLES_CONF"
-    fi
-    
-    # 删除配置文件
-    if [[ -f "/etc/nftables-mihomo.conf" ]]; then
-        rm -f "/etc/nftables-mihomo.conf"
-        echo -e "${GREEN}✓ 已删除nftables配置文件${PLAIN}"
-    fi
-}
 
-# 清理iptables规则
-cleanup_iptables_rules() {
-    echo -e "${CYAN}正在清理iptables规则...${PLAIN}"
-    
-    # 获取外部网络接口
-    local external_interface=$(ip route | grep default | awk '{print $5}' | head -n1)
-    if [[ -z "$external_interface" ]]; then
-        external_interface="eth0"
-    fi
-    
-    # 从PREROUTING链中移除mihomo规则
-    echo -e "${CYAN}清理PREROUTING规则...${PLAIN}"
-    iptables -t nat -D PREROUTING -j MIHOMO_PREROUTING 2>/dev/null || true
-    iptables -t mangle -D PREROUTING -j MIHOMO_MANGLE 2>/dev/null || true
-    
-    # 清理POSTROUTING中的MASQUERADE规则（只清理我们添加的）
-    echo -e "${CYAN}清理POSTROUTING规则...${PLAIN}"
-    # 注意：这里要小心，不要删除系统可能需要的其他MASQUERADE规则
-    # 我们只删除针对特定接口的规则
-    local masq_rules=$(iptables -t nat -L POSTROUTING --line-numbers -n | grep "MASQUERADE.*$external_interface" | awk '{print $1}' | sort -nr)
-    for rule_num in $masq_rules; do
-        iptables -t nat -D POSTROUTING $rule_num 2>/dev/null || true
-    done
-    
-    # 删除自定义链
-    echo -e "${CYAN}删除自定义链...${PLAIN}"
-    iptables -t nat -F MIHOMO_PREROUTING 2>/dev/null || true
-    iptables -t nat -X MIHOMO_PREROUTING 2>/dev/null || true
-    iptables -t mangle -F MIHOMO_MANGLE 2>/dev/null || true
-    iptables -t mangle -X MIHOMO_MANGLE 2>/dev/null || true
-    
-    # 删除路由规则
-    echo -e "${CYAN}清理路由规则...${PLAIN}"
-    ip rule del fwmark 1 table 100 2>/dev/null || true
-    ip route del local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
-    
-    # 删除规则文件
-    if [[ -f "$IPTABLES_RULES_FILE" ]]; then
-        rm -f "$IPTABLES_RULES_FILE"
-        echo -e "${GREEN}✓ 已删除iptables规则文件${PLAIN}"
-    fi
-    
-    # 验证清理结果
-    echo -e "${CYAN}验证清理结果...${PLAIN}"
-    local remaining_rules=0
-    
-    # 检查是否还有残留的MIHOMO规则
-    if iptables -t nat -L PREROUTING -n 2>/dev/null | grep -q "MIHOMO"; then
-        echo -e "${YELLOW}⚠ NAT表仍有残留的MIHOMO规则${PLAIN}"
-        ((remaining_rules++))
-    fi
-    
-    if iptables -t mangle -L PREROUTING -n 2>/dev/null | grep -q "MIHOMO"; then
-        echo -e "${YELLOW}⚠ MANGLE表仍有残留的MIHOMO规则${PLAIN}"
-        ((remaining_rules++))
-    fi
-    
-    # 检查链是否已删除
-    if iptables -t nat -L MIHOMO_PREROUTING -n 2>/dev/null; then
-        echo -e "${YELLOW}⚠ MIHOMO_PREROUTING链仍然存在${PLAIN}"
-        ((remaining_rules++))
-    fi
-    
-    if iptables -t mangle -L MIHOMO_MANGLE -n 2>/dev/null; then
-        echo -e "${YELLOW}⚠ MIHOMO_MANGLE链仍然存在${PLAIN}"
-        ((remaining_rules++))
-    fi
-    
-    if [[ $remaining_rules -eq 0 ]]; then
-        echo -e "${GREEN}✓ 所有MIHOMO相关规则已清理完成${PLAIN}"
-    else
-        echo -e "${YELLOW}⚠ 发现 $remaining_rules 个残留规则，可能需要手动清理${PLAIN}"
-    fi
-    
-    echo -e "${GREEN}✓ iptables规则清理完成${PLAIN}"
-}
-
-# 清理防火墙规则
-cleanup_firewall_rules() {
-    local firewall_type=$(detect_firewall_type)
-    
-    case $firewall_type in
-        "nftables")
-            cleanup_nftables_rules
-            ;;
-        "iptables")
-            cleanup_iptables_rules
-            ;;
-        *)
-            echo -e "${YELLOW}⚠ 未检测到防火墙类型${PLAIN}"
-            ;;
-    esac
-}
 
 # 检查服务状态
 check_status() {
@@ -1154,46 +713,20 @@ check_status() {
         echo -e "${YELLOW}⚠ UI界面: 不存在${PLAIN}"
     fi
     
-    # 防火墙状态检查（整合的防火墙检测功能）
+    # 防火墙状态检查
     echo -e "\n${CYAN}防火墙状态检查:${PLAIN}"
-    local firewall_type=$(detect_firewall_type)
-    echo -e "${YELLOW}• 防火墙类型: $firewall_type${PLAIN}"
-    
-    case $firewall_type in
-        "nftables")
-            if check_firewall_rules; then
-                echo -e "${GREEN}✓ nftables透明代理规则: 已配置${PLAIN}"
-                echo -e "${YELLOW}• 配置文件: /etc/nftables-mihomo.conf${PLAIN}"
-                echo -e "\n${CYAN}规则详情:${PLAIN}"
-                nft list table inet mihomo 2>/dev/null | head -20
-            else
-                echo -e "${RED}✗ nftables透明代理规则: 未配置${PLAIN}"
-                echo -e "${YELLOW}• 建议: 重新运行一键安装来配置防火墙规则${PLAIN}"
-            fi
-            ;;
-        "iptables")
-            if check_firewall_rules; then
-                echo -e "${GREEN}✓ iptables透明代理规则: 已配置${PLAIN}"
-                echo -e "${YELLOW}• 规则文件: $IPTABLES_RULES_FILE${PLAIN}"
-                echo -e "\n${CYAN}规则详情:${PLAIN}"
-                echo -e "${YELLOW}PREROUTING链:${PLAIN}"
-                iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep MIHOMO
-                echo -e "\n${YELLOW}MIHOMO_PREROUTING链:${PLAIN}"
-                iptables -t nat -L MIHOMO_PREROUTING -n --line-numbers 2>/dev/null | head -10
-            else
-                echo -e "${RED}✗ iptables透明代理规则: 未配置${PLAIN}"
-                echo -e "${YELLOW}• 建议: 重新运行一键安装来配置防火墙规则${PLAIN}"
-            fi
-            ;;
-        "none")
-            echo -e "${RED}✗ 防火墙: 未安装或未启用${PLAIN}"
-            echo -e "${YELLOW}• 建议: 安装iptables或nftables来支持透明代理${PLAIN}"
-            ;;
-    esac
+    if check_simple_rules; then
+        echo -e "${GREEN}✓ iptables透明代理规则: 已配置${PLAIN}"
+        echo -e "\n${CYAN}规则详情:${PLAIN}"
+        iptables -t nat -L PREROUTING -n 2>/dev/null | grep "REDIRECT.*7892" || echo "无规则"
+    else
+        echo -e "${RED}✗ iptables透明代理规则: 未配置${PLAIN}"
+        echo -e "${YELLOW}• 建议: 重新运行一键安装来配置防火墙规则${PLAIN}"
+    fi
     
     # 透明代理可用性检查
     echo -e "\n${CYAN}透明代理状态:${PLAIN}"
-    if check_firewall_rules && systemctl is-active --quiet mihomo; then
+    if check_simple_rules && systemctl is-active --quiet mihomo; then
         echo -e "${GREEN}✓ 透明代理: 可用${PLAIN}"
         local main_ip=$(get_main_ip)
         echo -e "${YELLOW}• 客户端网关设置: $main_ip${PLAIN}"
@@ -1203,7 +736,7 @@ check_status() {
         if ! systemctl is-active --quiet mihomo; then
             echo -e "${YELLOW}• 原因: Mihomo服务未运行${PLAIN}"
         fi
-        if ! check_firewall_rules; then
+        if ! check_simple_rules; then
             echo -e "${YELLOW}• 原因: 防火墙规则未配置${PLAIN}"
         fi
     fi
@@ -1256,7 +789,7 @@ show_usage_guide() {
     
     # 检查防火墙规则状态
     local firewall_configured=false
-    if check_firewall_rules; then
+    if check_simple_rules; then
         firewall_configured=true
         echo -e "${GREEN}✓ 防火墙规则已自动配置，透明代理可用${PLAIN}"
     else
@@ -1325,12 +858,10 @@ show_usage_guide() {
     echo
     
     echo -e "${YELLOW}防火墙规则说明:${PLAIN}"
-    local firewall_type=$(detect_firewall_type)
-    echo -e "${CYAN}• 当前防火墙类型: $firewall_type${PLAIN}"
+    echo -e "${CYAN}• 使用iptables基础规则${PLAIN}"
     if $firewall_configured; then
         echo -e "${GREEN}• 透明代理规则: 已配置${PLAIN}"
         echo -e "${CYAN}• 自动重定向TCP流量到端口7892${PLAIN}"
-        echo -e "${CYAN}• 自动重定向DNS流量到端口53${PLAIN}"
         echo -e "${CYAN}• 排除本机和SSH流量，防止连接中断${PLAIN}"
     else
         echo -e "${RED}• 透明代理规则: 未配置${PLAIN}"
@@ -1349,14 +880,7 @@ show_usage_guide() {
     echo -e "${CYAN}• 查看服务日志: journalctl -u mihomo -f${PLAIN}"
     echo -e "${CYAN}• 检查端口监听: ss -tlnp | grep mihomo${PLAIN}"
     if $firewall_configured; then
-        case $firewall_type in
-            "nftables")
-                echo -e "${CYAN}• 查看防火墙规则: nft list table inet mihomo${PLAIN}"
-                ;;
-            "iptables")
-                echo -e "${CYAN}• 查看防火墙规则: iptables -t nat -L MIHOMO_PREROUTING${PLAIN}"
-                ;;
-        esac
+        echo -e "${CYAN}• 查看防火墙规则: iptables -t nat -L PREROUTING${PLAIN}"
     fi
     
     read -p "按任意键返回主菜单..." key
@@ -1396,7 +920,7 @@ uninstall_mihomo() {
     fi
     
     # 清理防火墙规则
-    cleanup_firewall_rules
+    cleanup_simple_rules
     
     # 删除服务文件
     if [[ -f "$SERVICE_FILE" ]]; then
@@ -1644,10 +1168,7 @@ one_key_install() {
     create_service
     
     echo -e "${CYAN}[7/8] 配置防火墙规则...${PLAIN}"
-    if ! setup_firewall_rules; then
-        echo -e "${YELLOW}⚠ 防火墙规则配置失败，透明代理可能无法正常工作${PLAIN}"
-        echo -e "${YELLOW}您可以稍后重新运行安装程序来重新配置防火墙规则${PLAIN}"
-    fi
+            setup_simple_rules
     
     echo -e "${CYAN}[8/8] 启动服务...${PLAIN}"
     if start_service; then
@@ -1663,7 +1184,7 @@ one_key_install() {
         echo -e "${YELLOW}DNS服务: ${GREEN}$main_ip:53${PLAIN}"
         echo -e "${GREEN}======================================================${PLAIN}"
         echo -e "${YELLOW}透明代理配置:${PLAIN}"
-        if check_firewall_rules; then
+        if check_simple_rules; then
             echo -e "${GREEN}✓ 防火墙规则已配置，透明代理应该可以正常工作${PLAIN}"
             echo -e "${YELLOW}• 将客户端网关设置为: $main_ip${PLAIN}"
             echo -e "${YELLOW}• 将客户端DNS设置为: $main_ip${PLAIN}"
@@ -1689,7 +1210,7 @@ one_key_install() {
         fi
         
         # 检查防火墙规则
-        if ! iptables -t nat -L MIHOMO_PREROUTING -n 2>/dev/null | grep -q "REDIRECT.*7892"; then
+        if ! check_simple_rules; then
             echo -e "${YELLOW}⚠ 透明代理规则可能未完全生效${PLAIN}"
             ((final_check++))
         fi
@@ -1736,7 +1257,7 @@ show_menu() {
             echo -e "${YELLOW}控制面板: ${GREEN}http://$main_ip:9090${PLAIN}"
             
             # 显示防火墙状态
-            if check_firewall_rules; then
+            if check_simple_rules; then
                 echo -e "${YELLOW}透明代理: ${GREEN}已启用${PLAIN}"
             else
                 echo -e "${YELLOW}透明代理: ${RED}未启用${PLAIN}"
