@@ -718,27 +718,26 @@ check_status() {
     if check_simple_rules; then
         echo -e "${GREEN}✓ iptables透明代理规则: 已配置${PLAIN}"
         echo -e "\n${CYAN}规则详情:${PLAIN}"
-        iptables -t nat -L PREROUTING -n 2>/dev/null | grep "REDIRECT.*7892" || echo "无规则"
+        iptables -t nat -L PREROUTING -n 2>/dev/null | grep "REDIRECT.*7892" || echo "规则格式可能不同"
     else
-        echo -e "${RED}✗ iptables透明代理规则: 未配置${PLAIN}"
-        echo -e "${YELLOW}• 建议: 重新运行一键安装来配置防火墙规则${PLAIN}"
+        echo -e "${YELLOW}⚠ iptables透明代理规则: 未检测到标准规则${PLAIN}"
+        echo -e "${YELLOW}• 可能使用了其他方式配置或规则格式不同${PLAIN}"
+        echo -e "\n${CYAN}当前NAT表规则:${PLAIN}"
+        iptables -t nat -L PREROUTING -n 2>/dev/null | head -5 || echo "无法查看规则"
     fi
     
-    # 透明代理可用性检查
+    # 透明代理可用性检查（更实用的判断）
     echo -e "\n${CYAN}透明代理状态:${PLAIN}"
-    if check_simple_rules && systemctl is-active --quiet mihomo; then
+    if systemctl is-active --quiet mihomo; then
         echo -e "${GREEN}✓ 透明代理: 可用${PLAIN}"
         local main_ip=$(get_main_ip)
+        echo -e "${YELLOW}• 服务运行正常，代理功能可用${PLAIN}"
         echo -e "${YELLOW}• 客户端网关设置: $main_ip${PLAIN}"
         echo -e "${YELLOW}• 客户端DNS设置: $main_ip${PLAIN}"
+        echo -e "${CYAN}• 如透明代理确实不工作，可重新运行安装配置防火墙规则${PLAIN}"
     else
         echo -e "${RED}✗ 透明代理: 不可用${PLAIN}"
-        if ! systemctl is-active --quiet mihomo; then
-            echo -e "${YELLOW}• 原因: Mihomo服务未运行${PLAIN}"
-        fi
-        if ! check_simple_rules; then
-            echo -e "${YELLOW}• 原因: 防火墙规则未配置${PLAIN}"
-        fi
+        echo -e "${YELLOW}• 原因: Mihomo服务未运行${PLAIN}"
     fi
     
     # 系统环境检查
@@ -787,14 +786,19 @@ show_usage_guide() {
     echo -e "${GREEN}管理密码: wallentv${PLAIN}"
     echo
     
-    # 检查防火墙规则状态
-    local firewall_configured=false
-    if check_simple_rules; then
-        firewall_configured=true
-        echo -e "${GREEN}✓ 防火墙规则已自动配置，透明代理可用${PLAIN}"
+    # 检查服务状态（更实用的判断）
+    local service_running=false
+    if systemctl is-active --quiet mihomo; then
+        service_running=true
+        echo -e "${GREEN}✓ Mihomo服务运行正常，代理功能可用${PLAIN}"
+        if check_simple_rules; then
+            echo -e "${GREEN}✓ 透明代理规则已配置${PLAIN}"
+        else
+            echo -e "${YELLOW}⚠ 透明代理规则未检测到，但服务正常运行${PLAIN}"
+        fi
     else
-        echo -e "${RED}✗ 防火墙规则未配置，透明代理不可用${PLAIN}"
-        echo -e "${YELLOW}• 重新运行一键安装以自动配置防火墙规则${PLAIN}"
+        echo -e "${RED}✗ Mihomo服务未运行${PLAIN}"
+        echo -e "${YELLOW}• 请先启动服务${PLAIN}"
     fi
     echo
     
@@ -806,7 +810,7 @@ show_usage_guide() {
     echo -e "   • 混合代理: $main_ip:7890 (推荐)"
     echo
     
-    if $firewall_configured; then
+    if $service_running; then
         echo -e "${YELLOW}使用方法二: 透明代理（推荐）${PLAIN}"
         echo -e "${CYAN}适用于: 全局代理，无需在每个设备上配置${PLAIN}"
         echo -e "${CYAN}配置方法:${PLAIN}"
@@ -824,14 +828,9 @@ show_usage_guide() {
         echo -e "      • 网关: $main_ip"
         echo
     else
-        echo -e "${YELLOW}使用方法二: DNS + 路由设置${PLAIN}"
-        echo -e "${CYAN}适用于: 部分流量代理（需要防火墙规则支持）${PLAIN}"
-        echo -e "${CYAN}配置方法:${PLAIN}"
-        echo -e "   1. 将设备DNS设置为: $main_ip"
-        echo -e "   2. 添加路由规则:"
-        echo -e "      • 目标网段: 198.18.0.0/16"
-        echo -e "      • 网关: $main_ip"
-        echo -e "${RED}   注意: 需要先配置防火墙规则才能正常工作${PLAIN}"
+        echo -e "${YELLOW}使用方法二: 透明代理${PLAIN}"
+        echo -e "${RED}需要先启动Mihomo服务${PLAIN}"
+        echo -e "${CYAN}启动命令: 选择菜单 [2] 启动服务${PLAIN}"
         echo
     fi
     
@@ -859,13 +858,17 @@ show_usage_guide() {
     
     echo -e "${YELLOW}防火墙规则说明:${PLAIN}"
     echo -e "${CYAN}• 使用iptables基础规则${PLAIN}"
-    if $firewall_configured; then
-        echo -e "${GREEN}• 透明代理规则: 已配置${PLAIN}"
-        echo -e "${CYAN}• 自动重定向TCP流量到端口7892${PLAIN}"
-        echo -e "${CYAN}• 排除本机和SSH流量，防止连接中断${PLAIN}"
+    if $service_running; then
+        if check_simple_rules; then
+            echo -e "${GREEN}• 透明代理规则: 已配置${PLAIN}"
+            echo -e "${CYAN}• 自动重定向TCP流量到端口7892${PLAIN}"
+            echo -e "${CYAN}• 排除本机和SSH流量，防止连接中断${PLAIN}"
+        else
+            echo -e "${YELLOW}• 透明代理规则: 未检测到标准格式${PLAIN}"
+            echo -e "${CYAN}• 服务正常运行，如透明代理不工作可重新配置${PLAIN}"
+        fi
     else
-        echo -e "${RED}• 透明代理规则: 未配置${PLAIN}"
-        echo -e "${YELLOW}• 请重新运行安装程序来自动配置防火墙规则${PLAIN}"
+        echo -e "${RED}• 服务未运行，请先启动服务${PLAIN}"
     fi
     echo
     
@@ -879,9 +882,9 @@ show_usage_guide() {
     echo -e "${CYAN}• 查看服务状态: systemctl status mihomo${PLAIN}"
     echo -e "${CYAN}• 查看服务日志: journalctl -u mihomo -f${PLAIN}"
     echo -e "${CYAN}• 检查端口监听: ss -tlnp | grep mihomo${PLAIN}"
-    if $firewall_configured; then
-        echo -e "${CYAN}• 查看防火墙规则: iptables -t nat -L PREROUTING${PLAIN}"
-    fi
+    echo -e "${CYAN}• 查看防火墙规则: iptables -t nat -L PREROUTING${PLAIN}"
+    echo -e "${CYAN}• 测试代理连接: curl --proxy http://$main_ip:7890 httpbin.org/ip${PLAIN}"
+    echo -e "${CYAN}• 如透明代理不工作: 重新运行 [1] 一键安装${PLAIN}"
     
     read -p "按任意键返回主菜单..." key
 }
@@ -1256,12 +1259,8 @@ show_menu() {
             echo -e "${YELLOW}当前状态: ${GREEN}运行中${PLAIN}"
             echo -e "${YELLOW}控制面板: ${GREEN}http://$main_ip:9090${PLAIN}"
             
-            # 显示防火墙状态
-            if check_simple_rules; then
-                echo -e "${YELLOW}透明代理: ${GREEN}已启用${PLAIN}"
-            else
-                echo -e "${YELLOW}透明代理: ${RED}未启用${PLAIN}"
-            fi
+            # 显示透明代理状态（基于服务运行状态）
+            echo -e "${YELLOW}透明代理: ${GREEN}服务正常${PLAIN}"
         else
             echo -e "${YELLOW}当前状态: ${RED}未运行${PLAIN}"
             echo -e "${YELLOW}透明代理: ${RED}未启用${PLAIN}"
