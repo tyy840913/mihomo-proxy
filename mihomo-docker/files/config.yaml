@@ -54,7 +54,7 @@ external-controller: 0.0.0.0:9090
 external-ui: ui
 
 # 访问控制面板的密码，设置后别人就不能随意访问你的控制面板了
-secret: "wallentv"
+secret: "421121"
 
 
 # DNS设置（处理域名解析的方式，很重要！）
