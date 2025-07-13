@@ -399,7 +399,7 @@ copy_config_file() {
         cd "$tmp_dir"
         
         # 下载并解压UI包
-        if ! wget --timeout=30 --tries=3 https://route.luxxk.dpdns.org/github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz; then
+        if ! wget --timeout=30 --tries=3 https://github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz; then
             echo -e "${RED}警告: UI包下载失败，将使用无UI模式${PLAIN}"
         else
             tar -xzf compressed-dist.tgz -C "$CONF_DIR/ui"
