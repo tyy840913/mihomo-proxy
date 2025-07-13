@@ -198,7 +198,7 @@ check_files_dir() {
 
 # 自动下载缺失的文件
 download_missing_files() {
-    local github_base_url="https://raw.githubusercontent.com/wallentv/mihomo-proxy/master/mihomo-docker/files"
+    local github_base_url="https://route.luxxk.dpdns.org/raw.githubusercontent.com/tyy840913/mihomo-proxy/master/mihomo-docker/files"
     local required_files=("setup_proxy.sh" "setup_router.sh" "check_status.sh" "config.yaml")
     local download_needed=0
     
@@ -230,13 +230,13 @@ download_missing_files() {
     # 测试网络连接
     echo -e "${CYAN}测试网络连接...${PLAIN}"
     if command -v curl &> /dev/null; then
-        if ! curl -fsSL --connect-timeout 10 "https://raw.githubusercontent.com" &> /dev/null; then
+        if ! curl -fsSL --connect-timeout 10 "https://route.luxxk.dpdns.org/raw.githubusercontent.com" &> /dev/null; then
             echo -e "${RED}网络连接失败，无法访问GitHub${PLAIN}"
             echo -e "${YELLOW}请检查网络连接或手动下载文件${PLAIN}"
             return 1
         fi
     elif command -v wget &> /dev/null; then
-        if ! wget -q --timeout=10 --spider "https://raw.githubusercontent.com" &> /dev/null; then
+        if ! wget -q --timeout=10 --spider "https://route.luxxk.dpdns.org/raw.githubusercontent.com" &> /dev/null; then
             echo -e "${RED}网络连接失败，无法访问GitHub${PLAIN}"
             echo -e "${YELLOW}请检查网络连接或手动下载文件${PLAIN}"
             return 1
@@ -339,7 +339,7 @@ check_exec_scripts() {
         echo -e "${YELLOW}解决方案:${PLAIN}"
         echo -e "${YELLOW}1. 确保网络连接正常，脚本会自动从GitHub下载${PLAIN}"
         echo -e "${YELLOW}2. 手动下载完整的mihomo-proxy目录:${PLAIN}"
-        echo -e "   git clone https://github.com/wallentv/mihomo-proxy.git${PLAIN}"
+        echo -e "   git clone https://route.luxxk.dpdns.org/github.com/tyy840913/mihomo-proxy.git${PLAIN}"
         echo -e "   cd mihomo-proxy/mihomo-docker${PLAIN}"
         echo -e "   bash mihomo.sh${PLAIN}"
         echo -e "${YELLOW}3. 手动下载以下文件到 $FILES_DIR 目录:${PLAIN}"
