@@ -399,7 +399,7 @@ copy_config_file() {
         cd "$tmp_dir"
         
         # 下载并解压UI包
-        if ! wget --timeout=30 --tries=3 https://github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz; then
+        if ! wget --timeout=30 --tries=3 https://luxxk.dpdns.org/github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz; then
             echo -e "${RED}警告: UI包下载失败，将使用无UI模式${PLAIN}"
         else
             tar -xzf compressed-dist.tgz -C "$CONF_DIR/ui"
@@ -424,8 +424,8 @@ copy_config_file() {
         # 尝试多个下载源
         local geoip_downloaded=0
         local geoip_sources=(
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
-            "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"
+            "https://woskee.dpdns.org/github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
+            "https://woskee.dpdns.org/github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"
             "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
         )
         
@@ -453,7 +453,7 @@ copy_config_file() {
         echo -e "${CYAN}正在下载GeoSite数据库...${PLAIN}"
         
         local geosite_sources=(
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+            "https://wosken.dpdns.org/github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
             "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
         )
         
