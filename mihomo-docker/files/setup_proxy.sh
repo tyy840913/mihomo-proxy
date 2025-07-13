@@ -424,7 +424,7 @@ copy_config_file() {
         # 尝试多个下载源
         local geoip_downloaded=0
         local geoip_sources=(
-            "https://route.luxxk.dpdns.org/github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
             "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"
             "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
         )
@@ -453,7 +453,7 @@ copy_config_file() {
         echo -e "${CYAN}正在下载GeoSite数据库...${PLAIN}"
         
         local geosite_sources=(
-            "https://route.wosken.dpdns.org/github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
             "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
         )
         
