@@ -904,15 +904,6 @@ check_installation_status() {
     echo -e "${CYAN}              安装状态检查${PLAIN}"
     echo -e "${CYAN}======================================================${PLAIN}"
     
-    # 检查状态文件是否存在
-    if [[ ! -f "$STATE_FILE" ]]; then
-        echo -e "${YELLOW}未检测到安装状态。目前尚未初始化安装。${PLAIN}"
-        echo -e "${YELLOW}请先运行初始化安装。${PLAIN}"
-        read -p "按任意键返回主菜单..." key
-        show_menu
-        return
-    fi
-    
     # 调用专门的状态检查脚本
     if [[ -f "$CHECK_SCRIPT" ]]; then
         echo -e "${CYAN}正在执行详细状态检查...${PLAIN}"
