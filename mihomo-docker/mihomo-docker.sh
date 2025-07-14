@@ -369,7 +369,7 @@ check_root() {
                 echo -e "${GREEN}正在使用sudo重新执行脚本...${PLAIN}"
                 
                 # 获取当前脚本的绝对路径
-                SCRIPT_PATH=$(readlink -f "$0")
+                SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
                 
                 # 如果脚本没有执行权限，自动添加
                 if [[ ! -x "$SCRIPT_PATH" ]]; then
@@ -1259,7 +1259,7 @@ main() {
     log_message "开始执行安装脚本"
     
     # 检查脚本是否有执行权限
-    SCRIPT_PATH=$(readlink -f "$0")
+    SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     if [[ ! -x "$SCRIPT_PATH" ]]; then
         echo -e "${YELLOW}脚本没有执行权限，正在添加...${PLAIN}"
         chmod +x "$SCRIPT_PATH"
