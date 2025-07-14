@@ -11,28 +11,18 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
-# 日志文件路径
-LOG_FILE="/var/log/mihomo-proxy.log"
-
-# 日志函数
-log_message() {
-    local level=$1
-    local message=$2
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $message" >> "$LOG_FILE"
-}
-
-# 错误处理函数
-handle_error() {
-    local error_msg=$1
-    log_message "错误" "$error_msg"
-    echo -e "${RED}$error_msg${PLAIN}"
-    exit 1
-}
-
 # 配置信息
 SCRIPT_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")"
 FILES_DIR="$SCRIPT_DIR/files"
 CONF_DIR="/etc/mihomo"
+CONFIG_URL="https://route.luxxk.dpdns.org/raw.githubusercontent.com/tyy840913/mihomo-proxy/refs/heads/master/mihomo-docker/files/config.yaml"
+
+# 错误处理函数
+handle_error() {
+    local error_msg=$1
+    echo -e "${RED}$error_msg${PLAIN}"
+    exit 1
+}
 
 # 检查并安装基础工具（精简版）
 install_essential_tools() {
@@ -72,25 +62,23 @@ create_config_dir() {
     echo -e "${GREEN}配置目录和规则文件目录已创建${PLAIN}"
 }
 
-# 复制配置文件
-copy_config_file() {
-    local config_template="$FILES_DIR/config.yaml"
-    
+# 下载配置文件
+download_config_file() {
     echo -e "${CYAN}正在检查配置文件...${PLAIN}"
     
     if [[ -f "$CONF_DIR/config.yaml" ]]; then
         echo -e "${YELLOW}配置文件已存在: $CONF_DIR/config.yaml${PLAIN}"
-        echo -e "${YELLOW}跳过配置文件复制，保留现有配置${PLAIN}"
+        echo -e "${YELLOW}跳过配置文件下载，保留现有配置${PLAIN}"
         return
     fi
 
-    if [[ ! -f "$config_template" ]]; then
-        handle_error "错误: 配置文件不存在($config_template)"
+    echo -e "${CYAN}从远程下载配置文件...${PLAIN}"
+    if ! wget --timeout=30 --tries=3 -O "$CONF_DIR/config.yaml" "$CONFIG_URL"; then
+        handle_error "错误: 配置文件下载失败"
     fi
-
-    cp "$config_template" "$CONF_DIR/config.yaml" || handle_error "错误: 配置文件复制失败"
+    
     chmod 644 "$CONF_DIR/config.yaml"
-    echo -e "${GREEN}配置文件已复制到 $CONF_DIR/config.yaml${PLAIN}"
+    echo -e "${GREEN}配置文件已下载到 $CONF_DIR/config.yaml${PLAIN}"
 }
 
 # 下载UI界面
@@ -245,18 +233,10 @@ restart_mihomo() {
 reset_config() {
     echo -e "${CYAN}正在重置Mihomo配置...${PLAIN}"
     
-    if [[ -f "/etc/mihomo/config.yaml" ]]; then
-        local backup_file="/etc/mihomo/config.yaml.backup.$(date '+%Y%m%d_%H%M%S')"
-        echo -e "${CYAN}正在备份当前配置文件...${PLAIN}"
-        cp "/etc/mihomo/config.yaml" "$backup_file" && \
-        echo -e "${GREEN}✓ 配置文件已备份到: $backup_file${PLAIN}" || \
-        echo -e "${YELLOW}⚠ 配置文件备份失败，继续重置...${PLAIN}"
-    fi
-    
     echo -e "${CYAN}正在删除当前配置文件...${PLAIN}"
     rm -f "/etc/mihomo/config.yaml" 2>/dev/null
     
-    copy_config_file
+    download_config_file
     start_mihomo_container
     
     echo -e "${GREEN}配置重置完成！${PLAIN}"
@@ -266,25 +246,16 @@ reset_config() {
 main() {
     local mode="${1:-install}"  # 默认为install模式
     
-    # 创建日志文件
-    touch "$LOG_FILE"
-    chmod 644 "$LOG_FILE"
-    
     case "$mode" in
         "restart")
-            log_message "信息" "开始执行代理机重启脚本"
             restart_mihomo
-            log_message "信息" "代理机重启脚本执行完成"
             return 0
             ;;
         "reset")
-            log_message "信息" "开始执行配置重置脚本"
             reset_config
-            log_message "信息" "配置重置脚本执行完成"
             return 0
             ;;
         *)
-            log_message "信息" "开始执行代理机配置脚本"
             ;;
     esac
     
@@ -303,8 +274,8 @@ main() {
     # 创建配置目录
     create_config_dir
     
-    # 复制配置文件
-    copy_config_file
+    # 下载配置文件
+    download_config_file
     
     # 下载UI
     download_ui
@@ -321,8 +292,6 @@ main() {
     echo -e "${GREEN}代理机配置完成！${PLAIN}"
     echo -e "${GREEN}控制面板地址: http://${host_ip}:9090/ui${PLAIN}"
     echo -e "${GREEN}======================================================${PLAIN}"
-    
-    log_message "信息" "代理机配置脚本执行完成"
 }
 
 # 执行主函数，传递命令行参数
