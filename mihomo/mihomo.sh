@@ -342,7 +342,7 @@ download_mihomo() {
     echo -e "${YELLOW}检测到系统架构: $arch${PLAIN}"
     
     # 获取最新版本号
-    local latest_version=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+    local latest_version=$(curl -s https://route.woskee.nyc.mn/api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
     if [[ -z "$latest_version" ]]; then
         handle_error "无法获取最新版本信息"
     fi
@@ -354,9 +354,9 @@ download_mihomo() {
     if [[ "$arch" == "amd64-compatible" ]]; then
         # 对于不支持 v3 微架构的处理器，使用兼容版本
         echo -e "${YELLOW}检测到旧版 AMD64 处理器，下载兼容版本...${PLAIN}"
-        download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-amd64-compatible-${latest_version}.gz"
+        download_url="https://route.woskee.nyc.mn/github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-amd64-compatible-${latest_version}.gz"
     else
-        download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-${arch}-${latest_version}.gz"
+        download_url="https://route.woskee.nyc.mn/github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-${arch}-${latest_version}.gz"
     fi
     
     # 下载文件
@@ -367,7 +367,7 @@ download_mihomo() {
         # 如果兼容版本下载失败，尝试下载标准版本
         if [[ "$arch" == "amd64-compatible" ]]; then
             echo -e "${YELLOW}⚠ 兼容版本下载失败，尝试标准版本...${PLAIN}"
-            download_url="https://github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-amd64-${latest_version}.gz"
+            download_url="https://route.woskee.nyc.mn/github.com/MetaCubeX/mihomo/releases/download/${latest_version}/mihomo-linux-amd64-${latest_version}.gz"
             if wget -O "$BINARY_FILE.gz" "$download_url"; then
                 echo -e "${GREEN}✓ 标准版本下载成功${PLAIN}"
                 echo -e "${YELLOW}⚠ 注意: 如果启动失败，可能是处理器不支持，请联系开发者${PLAIN}"
@@ -395,7 +395,7 @@ download_ui() {
     mkdir -p "$CONFIG_DIR/ui"
     
     # 下载MetaCubeX UI
-    local ui_url="https://github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz"
+    local ui_url="https://route.woskee.nyc.mn/github.com/MetaCubeX/metacubexd/releases/download/v1.187.1/compressed-dist.tgz"
     
     if wget -O /tmp/ui.tgz "$ui_url"; then
         tar -xzf /tmp/ui.tgz -C "$CONFIG_DIR/ui"
@@ -425,7 +425,7 @@ create_config() {
     
     # 如果本地没有配置文件，则从 GitHub 下载
     echo -e "${CYAN}本地未找到配置文件，正在从 GitHub 下载...${PLAIN}"
-    local config_url="https://raw.githubusercontent.com/wallentv/mihomo-proxy/refs/heads/master/mihomo/config.yaml"
+    local config_url="https://route.woskee.nyc.mn/raw.githubusercontent.com/wallentv/mihomo-proxy/refs/heads/master/mihomo/config.yaml"
     
     if wget -O "$CONFIG_DIR/config.yaml" "$config_url"; then
         chmod 644 "$CONFIG_DIR/config.yaml"
@@ -435,7 +435,7 @@ create_config() {
         # 预下载MMDB文件，避免启动时下载失败
         echo -e "${CYAN}正在预下载地理位置数据库...${PLAIN}"
         mkdir -p "$CONFIG_DIR"
-        if wget -O "$CONFIG_DIR/Country.mmdb" "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb" 2>/dev/null; then
+        if wget -O "$CONFIG_DIR/Country.mmdb" "https://route.woskee.nyc.mn/github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb" 2>/dev/null; then
             echo -e "${GREEN}✓ 地理位置数据库下载完成${PLAIN}"
         else
             echo -e "${YELLOW}⚠ 地理位置数据库下载失败，服务启动时会自动下载${PLAIN}"
