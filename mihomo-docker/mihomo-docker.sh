@@ -353,48 +353,6 @@ check_exec_scripts() {
     return 0
 }
 
-# 检查是否具有root权限
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        echo -e "${YELLOW}警告: 当前非root用户，需要root权限才能继续安装${PLAIN}"
-        echo -e "${CYAN}尝试获取root权限...${PLAIN}"
-        
-        # 检查是否有sudo命令
-        if command -v sudo &> /dev/null; then
-            echo -e "${CYAN}已检测到sudo命令，尝试使用sudo执行脚本...${PLAIN}"
-            
-            # 询问用户是否自动提权
-            read -p "是否自动使用sudo重新执行此脚本? (y/n): " auto_sudo
-            if [[ "$auto_sudo" == "y" || "$auto_sudo" == "Y" ]]; then
-                echo -e "${GREEN}正在使用sudo重新执行脚本...${PLAIN}"
-                
-                # 获取当前脚本的绝对路径
-                SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-                
-                # 如果脚本没有执行权限，自动添加
-                if [[ ! -x "$SCRIPT_PATH" ]]; then
-                    echo -e "${CYAN}脚本没有执行权限，正在添加...${PLAIN}"
-                    sudo chmod +x "$SCRIPT_PATH"
-                fi
-                
-                # 使用sudo重新执行脚本，保持原始参数
-                exec sudo bash "$SCRIPT_PATH" "$@"
-            else
-                echo -e "${YELLOW}请以root权限运行此脚本:${PLAIN}"
-                echo -e "${CYAN}方法1: ${GREEN}sudo bash $0${PLAIN}"
-                echo -e "${CYAN}方法2: ${GREEN}sudo su${PLAIN} 然后 ${GREEN}bash $0${PLAIN}"
-                exit 1
-            fi
-        else
-            echo -e "${YELLOW}系统中没有发现sudo命令，请尝试以下方法获取root权限:${PLAIN}"
-            echo -e "${CYAN}方法1: ${GREEN}su -${PLAIN} 输入root密码后执行 ${GREEN}bash $0${PLAIN}"
-            echo -e "${CYAN}方法2: 重新登录为root用户后执行脚本${PLAIN}"
-            echo -e "${CYAN}方法3: ${GREEN}chmod +x $0${PLAIN} 然后以root用户执行 ${GREEN}./$0${PLAIN}"
-            exit 1
-        fi
-    fi
-}
-
 # 检查操作系统
 check_os() {
     if [[ -f /etc/os-release ]]; then
@@ -1257,21 +1215,6 @@ main() {
     touch "$LOG_FILE"
     chmod 644 "$LOG_FILE"
     log_message "开始执行安装脚本"
-    
-    # 检查脚本是否有执行权限
-    SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-    if [[ ! -x "$SCRIPT_PATH" ]]; then
-        echo -e "${YELLOW}脚本没有执行权限，正在添加...${PLAIN}"
-        chmod +x "$SCRIPT_PATH"
-        if [[ $? -eq 0 ]]; then
-            echo -e "${GREEN}执行权限已添加${PLAIN}"
-        else
-            echo -e "${YELLOW}添加执行权限失败${PLAIN}"
-        fi
-    fi
-    
-    # 检查root权限
-    check_root
     
     # 检查系统
     check_os
