@@ -24,6 +24,23 @@ handle_error() {
     exit 1
 }
 
+# 检查操作系统
+check_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+        VERSION_ID=$VERSION_ID
+    else
+        handle_error "无法检测操作系统"
+    fi
+    
+    if [[ $OS != "debian" && $OS != "ubuntu" ]]; then
+        handle_error "此脚本只支持 Debian 或 Ubuntu 系统"
+    fi
+    
+    echo -e "${GREEN}检测到系统: $OS $VERSION_ID${PLAIN}"
+}
+
 # 检查并安装基础工具（精简版）
 install_essential_tools() {
     echo -e "${CYAN}检查基础工具...${PLAIN}"
@@ -262,6 +279,9 @@ main() {
     # 系统信息显示
     local arch=$(uname -m)
     echo -e "${CYAN}系统架构: $arch${PLAIN}"
+
+    # 检查操作系统
+    check_os
     
     # 安装基础工具
     install_essential_tools
