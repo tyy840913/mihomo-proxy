@@ -840,7 +840,6 @@ one_key_install() {
     
     # 0. 检查执行环境
     echo -e "${CYAN}[1/5] 检查执行环境...${PLAIN}"
-    check_root
     check_os
     
     # 1. 初始化设置
