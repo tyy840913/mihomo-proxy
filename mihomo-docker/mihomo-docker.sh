@@ -71,7 +71,7 @@ check_files_dir() {
 
 # 下载缺失文件
 download_missing_files() {
-    local github_base_url="https://raw.githubusercontent.com/wallentv/mihomo-proxy/master/mihomo-docker/files"
+    local github_base_url="https://route.luxxk.dpdns.org/raw.githubusercontent.com/wallentv/mihomo-proxy/master/mihomo-docker/files"
     local required_files=("setup_proxy.sh" "setup_router.sh" "check_status.sh" "config.yaml")
     local download_needed=0
     
